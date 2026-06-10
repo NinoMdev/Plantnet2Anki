@@ -52,7 +52,10 @@ BIO_TYPE_MAP = {
     "H":"Hemicryptophyte (perennial herb)", "G":"Geophyte (bulb/rhizome)",
     "Th":"Therophyte (annual)", "HH":"Helophyte (marsh plant)",
 }
-ORGAN_LABELS = {"flower":"Flower","leaf":"Leaf","habit":"Habit","fruit":"Fruit","bark":"Bark"}
+ORGAN_LABELS = {
+    "en": {"flower":"Flower", "leaf":"Leaf",    "habit":"Habit",          "fruit":"Fruit", "bark":"Bark"},
+    "fr": {"flower":"Fleur",  "leaf":"Feuille",  "habit":"Plante entière", "fruit":"Fruit", "bark":"Écorce"},
+}
 
 # ── Global state ──────────────────────────────────────────────────────────────
 state = {
@@ -267,112 +270,53 @@ def fetch_pfaf(sci, options):
     except Exception as e:
         return result, f"error: {e}"
 
+def fetch_common_name(sci, api_key, lang="en"):
+    """
+    Fetch common name from GBIF only.
+    Tries requested language first, falls back to English.
+    """
+    # Map lang codes to GBIF language codes
+    lang_map = {
+        "en": ("eng", "en"),
+        "fr": ("fra", "fre", "fr"),
+        "de": ("deu", "ger", "de"),
+        "es": ("spa", "es"),
+    }
+    pref_codes = lang_map.get(lang, ("eng", "en"))
+    en_codes   = lang_map["en"]
 
-# ── PlantNet common name lookup ───────────────────────────────────────────────
-def _cn_plantnet(sci, api_key):
-    """Common name from PlantNet taxonomy (fr then en)."""
-    if not api_key:
-        return ""
-    cleaned = clean_scientific_name(sci).lower()
-    genus   = sci.split()[0]
-    for lang in ("fr", "en"):
-        try:
-            url = (f"https://my-api.plantnet.org/v2/projects/k-world-flora/species"
-                   f"?prefix={requests.utils.quote(genus)}&lang={lang}&api-key={api_key}")
-            r = requests.get(url, headers=HEADERS, timeout=10)
-            if not r.ok:
-                continue
-            for sp in r.json() if isinstance(r.json(), list) else []:
-                if sp.get("scientificNameWithoutAuthor", "").lower() == cleaned:
-                    names = sp.get("commonNames", [])
-                    if names:
-                        return names[0]
-            # Fuzzy fallback
-            for sp in r.json() if isinstance(r.json(), list) else []:
-                sp_name = sp.get("scientificNameWithoutAuthor", "").lower()
-                if cleaned in sp_name or sp_name in cleaned:
-                    names = sp.get("commonNames", [])
-                    if names:
-                        return names[0]
-        except Exception:
-            continue
-    return ""
-
-
-def _cn_gbif(sci):
-    """Common name from GBIF vernacular names (fr then en then any)."""
     try:
-        # Step 1: resolve GBIF usageKey
         r = requests.get(f"{GBIF_API}/species/match",
                          params={"name": sci, "verbose": "false"},
                          headers=HEADERS, timeout=8)
         if not r.ok:
-            return ""
+            return "", "GBIF match failed"
         key = r.json().get("usageKey") or r.json().get("speciesKey")
         if not key:
-            return ""
-        # Step 2: get vernacular names
+            return "", "not found in GBIF"
+
         r2 = requests.get(f"{GBIF_API}/species/{key}/vernacularNames",
-                          params={"limit": 50}, headers=HEADERS, timeout=8)
+                          params={"limit": 100}, headers=HEADERS, timeout=8)
         if not r2.ok:
-            return ""
+            return "", f"GBIF vernacular HTTP {r2.status_code}"
+
         names = r2.json().get("results", [])
-        # Prefer French, then English, then anything
-        for lang in ("fra", "fre", "fr", "eng", "en"):
+
+        # Pass 1: preferred language
+        for n in names:
+            if n.get("language", "").lower() in pref_codes:
+                return n.get("vernacularName", ""), f"GBIF ({lang})"
+
+        # Pass 2: English fallback
+        if lang != "en":
             for n in names:
-                if n.get("language", "").lower().startswith(lang[:2]):
-                    return n.get("vernacularName", "")
-        if names:
-            return names[0].get("vernacularName", "")
-    except Exception:
-        pass
-    return ""
+                if n.get("language", "").lower() in en_codes:
+                    return n.get("vernacularName", ""), "GBIF (en fallback)"
 
+        return "", "no vernacular name in GBIF"
 
-def _cn_inat(sci):
-    """Common name from iNaturalist preferred_common_name (fr then en)."""
-    try:
-        r = requests.get(f"{INAT_API}/taxa",
-                         params={"q": sci, "rank": "species", "per_page": 5},
-                         headers=HEADERS, timeout=10)
-        if not r.ok:
-            return ""
-        cleaned = clean_scientific_name(sci).lower()
-        for taxon in r.json().get("results", []):
-            if taxon.get("name", "").lower() == cleaned:
-                # Try French name first
-                for name_obj in taxon.get("taxon_names", []):
-                    if name_obj.get("lexicon", "").lower() in ("french", "français"):
-                        return name_obj.get("name", "")
-                # Fall back to preferred_common_name (usually English)
-                cn = taxon.get("preferred_common_name", "")
-                if cn:
-                    return cn
-    except Exception:
-        pass
-    return ""
-
-
-def fetch_common_name(sci, api_key):
-    """
-    Fetch common name with cascade: PlantNet → GBIF → iNaturalist.
-    Returns (name: str, source: str)
-    """
-    cn = _cn_plantnet(sci, api_key)
-    if cn:
-        return cn, "PlantNet"
-
-    cn = _cn_gbif(sci)
-    if cn:
-        return cn, "GBIF"
-
-    cn = _cn_inat(sci)
-    if cn:
-        return cn, "iNaturalist"
-
-    return "", "not found"
-
-
+    except Exception as e:
+        return "", f"GBIF error: {e}"
 # ── PlantNet photos ───────────────────────────────────────────────────────────
 # ── Photo sources ────────────────────────────────────────────────────────────
 #
@@ -568,7 +512,6 @@ DECK_ID  = int(hashlib.md5(b"PlantNet_deck_v1").hexdigest()[:8], 16)
 
 FRONT_TEMPLATE = """
 {{PhotosHTML}}
-<div id="pn-organ" style="font-size:11px;color:#999;text-align:center;margin-bottom:4px;font-family:sans-serif"></div>
 <div style="text-align:center;color:#888;font-size:13px;margin-top:8px;font-family:sans-serif">What plant is this?</div>
 <script>
 (function init() {
@@ -619,50 +562,57 @@ CSS = (
 )
 
 
-def make_genanki_model():
+def make_genanki_model(front_template=None):
     fields = [
-        {"name": "PhotosHTML"},    # <img> tags, hidden by default, JS shows one randomly
+        {"name": "PhotosHTML"},
         {"name": "ScientificName"},
         {"name": "CommonName"},
         {"name": "Info"},
     ]
-    templates = [{"name": "Card 1", "qfmt": FRONT_TEMPLATE, "afmt": BACK_TEMPLATE}]
-    return genanki.Model(MODEL_ID, NOTETYPE_NAME, fields=fields,
-                         templates=templates, css=CSS)
+    templates = [{"name": "Card 1", "qfmt": front_template or FRONT_TEMPLATE, "afmt": BACK_TEMPLATE}]
+    model = genanki.Model(MODEL_ID, NOTETYPE_NAME, css=CSS)
+    model.set_fields(fields)
+    model.set_templates(templates)
+    return model
 
 
-def collect_photo_slots(images):
+def collect_photo_slots(images, lang="en"):
     """Return list of {url, organ} dicts for all available photos."""
+    labels = ORGAN_LABELS.get(lang, ORGAN_LABELS["en"])
     slots = []
-    order = list(ORGAN_LABELS.keys()) + ["own", "untagged"]
+    order = list(ORGAN_LABELS["en"].keys()) + ["own", "untagged"]
     for key in order:
         for url in images.get(key, []):
             if len(slots) >= MAX_PHOTO_SLOTS:
                 return slots
-            slots.append({"url": url, "organ": ORGAN_LABELS.get(key, "")})
+            slots.append({"url": url, "organ": labels.get(key, "")})
     return slots
 
 
-def build_info_html(plant):
+def build_info_html(plant, lang="en"):
     i = plant.get("info", {})
     rows = []
     fam = plant.get("family") or i.get("tb_family", "")
-    if fam:            rows.append(f"<b>Family</b>: {fam}")
-    if i.get("flowering"):  rows.append(f"<b>Flowering</b>: {i['flowering']} <small style='color:#aaa'>(Tela Botanica)</small>")
-    if i.get("perennial"):  rows.append(f"<b>Bio. type</b>: {i['perennial']} <small style='color:#aaa'>(Tela Botanica)</small>")
-    if i.get("habitat"):    rows.append(f"<b>Habitat</b>: {i['habitat']} <small style='color:#aaa'>(Tela Botanica)</small>")
-    if i.get("edible"):     rows.append(f"<b>Edible</b>: {i['edible']} <small style='color:#aaa'>(PFAF)</small>")
-    if i.get("medicinal"):  rows.append(f"<b>Medicinal</b>: {i['medicinal']} <small style='color:#aaa'>(PFAF)</small>")
-    if i.get("toxicity"):   rows.append(f"<b>Toxicity</b>: {i['toxicity']} <small style='color:#aaa'>(PFAF)</small>")
-    if i.get("description"):
-        rows.append(
-            f'<div style="font-size:12px;color:#666;border-top:1px solid #eee;'
-            f'margin-top:8px;padding-top:8px">{i["description"]}</div>'
-        )
+    if lang == "fr":
+        if fam:               rows.append(f"<b>Famille</b> : {fam}")
+        if i.get("flowering"):    rows.append(f"<b>Floraison</b> : {i['flowering']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("perennial"):    rows.append(f"<b>Type bio.</b> : {i['perennial']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("habitat"):      rows.append(f"<b>Habitat</b> : {i['habitat']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("edible"):       rows.append(f"<b>Comestible</b> : {i['edible']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("medicinal"):    rows.append(f"<b>Médicinal</b> : {i['medicinal']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("toxicity"):     rows.append(f"<b>Toxicité</b> : {i['toxicity']} <small style='color:#aaa'>(PFAF)</small>")
+    else:
+        if fam:               rows.append(f"<b>Family</b>: {fam}")
+        if i.get("flowering"):    rows.append(f"<b>Flowering</b>: {i['flowering']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("perennial"):    rows.append(f"<b>Bio. type</b>: {i['perennial']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("habitat"):      rows.append(f"<b>Habitat</b>: {i['habitat']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("edible"):       rows.append(f"<b>Edible</b>: {i['edible']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("medicinal"):    rows.append(f"<b>Medicinal</b>: {i['medicinal']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("toxicity"):     rows.append(f"<b>Toxicity</b>: {i['toxicity']} <small style='color:#aaa'>(PFAF)</small>")
     return "<br>".join(rows)
 
 
-def build_anki_pkg(plants, deck_name, media_files=None):
+def build_anki_pkg(plants, deck_name, media_files=None, lang="en"):
     """
     Build .apkg from enriched plant data.
     media_files: list of local file paths to embed (for offline mode).
@@ -670,14 +620,16 @@ def build_anki_pkg(plants, deck_name, media_files=None):
     """
     import io
 
-    model = make_genanki_model()
+    question = "Quelle est cette plante ?" if lang == "fr" else "What plant is this?"
+    front    = FRONT_TEMPLATE.replace("What plant is this?", question)
+    model    = make_genanki_model(front_template=front)
     deck  = genanki.Deck(DECK_ID, deck_name)
 
     for p in plants:
         sci    = p["scientific"]
         info   = p.get("info", {})
         common = info.get("common_name", "")
-        slots  = p.get("_slots", collect_photo_slots(p.get("images", {})))
+        slots  = p.get("_slots", collect_photo_slots(p.get("images", {}), lang=lang))
 
         # Build PhotosHTML: all images hidden, JS will show one randomly
         img_style = 'max-width:300px;max-height:240px;border-radius:8px;display:none;margin:0 auto'
@@ -686,7 +638,7 @@ def build_anki_pkg(plants, deck_name, media_files=None):
             f' style="{img_style}">'
             for s in slots
         )
-        fields = [photos_html, sci, common, build_info_html(p)]
+        fields = [photos_html, sci, common, build_info_html(p, lang=lang)]
         note   = genanki.Note(model=model, fields=fields,
                               guid=genanki.guid_for(sci))
         deck.add_note(note)
@@ -758,7 +710,9 @@ def run_generation(config, my_gen_id=None):
             plant["images"].update(extra_images)
 
         # Common name: PlantNet API (fr→en) then Wikipedia (fr→en)
-        cn, cn_status = fetch_common_name(sci, api_key)
+        lang      = config.get("lang", "en")
+        log(f"  Lang: {lang}", "ok")
+        cn, cn_status = fetch_common_name(sci, api_key, lang=lang)
         if cn:
             plant["info"]["common_name"] = cn
             log(f"  Common name: {cn} ({cn_status})", "ok")
@@ -768,6 +722,7 @@ def run_generation(config, my_gen_id=None):
     set_progress(93)
     deck_name = config.get("deck_name", "PlantNet – Botany")
     embed     = config.get("embed_images", False)
+
     media_files = []
 
     if embed:
@@ -826,7 +781,7 @@ def run_generation(config, my_gen_id=None):
 
     set_progress(98)
     log("Building .apkg…")
-    pkg_bytes = build_anki_pkg(plants, deck_name, media_files=media_files)
+    pkg_bytes = build_anki_pkg(plants, deck_name, media_files=media_files, lang=lang)
 
     total_cards  = len(plants)  # 1 card per species (JS random photo)
     total_photos = sum(sum(len(v) for v in p.get("images",{}).values()) for p in plants)
@@ -1026,6 +981,16 @@ input[type=range]{flex:1;accent-color:var(--green);}
 
     </div>
 
+    <div class="form-row">
+      <label>Card language / Langue des cartes</label>
+      <select id="lang-select">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="es">Español</option>
+      </select>
+    </div>
+
     <div class="toggle-row">
       <label class="toggle-switch">
         <input type="checkbox" id="tog-own" checked>
@@ -1190,6 +1155,7 @@ function startGen() {
     photo_source: photoSrc,
     organs:       organs,
     info:         info,
+    lang:         document.getElementById("lang-select").value,
     include_own:  document.getElementById("tog-own").checked,
     embed_images: document.getElementById("tog-embed").checked,
   };

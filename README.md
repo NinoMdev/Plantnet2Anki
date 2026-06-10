@@ -24,6 +24,7 @@ It opens a graphical interface that allows you to:
   - the photo source: by default, the app searches GBIF first, then iNaturalist, then the PlantNet API
 - **Embed** photos directly into the `.apkg` file. This is recommended, as it allows offline use and instant loading in each card.
 
+> Common name can be find in English, French, Deutsch, or Espanol. If not find in French, Deutsch or Espanol, the name will be diplayed in English. 
 > Be aware that deck generation can take some time and produce a large file if you select many photos per species or have a large number of observations.
 
 ### Card architecture
