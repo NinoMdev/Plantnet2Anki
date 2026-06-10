@@ -117,3 +117,9 @@ Then, open Anki on your computer: **File → Import**, and select your `.apkg` f
 Finally, sync AnkiDroid with your account from the app — your new cards will appear on your phone.
 
 **Enjoy your learning!** 🌿
+
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+See the LICENSE file for details.
