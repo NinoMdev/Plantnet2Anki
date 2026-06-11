@@ -539,12 +539,6 @@ FRONT_TEMPLATE = """
 """.strip()
 
 
-
-
-
-
-
-
 BACK_TEMPLATE = """
 {{FrontSide}}
 <hr style="border:none;border-top:1px solid #eee;margin:12px 0">
@@ -799,7 +793,6 @@ def run_generation(config, my_gen_id=None):
     else:
         log(f"Done — {len(plants)} species, {total_cards} cards, {total_photos} photos", "ok")
 
-
 # ── Embedded HTML ─────────────────────────────────────────────────────────────
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -884,8 +877,7 @@ input[type=range]{flex:1;accent-color:var(--green);}
     <p>Local tool — all data stays on your machine</p>
   </header>
 
-  <!-- STEP 1: Import CSV -->
-  <div id="sec-import" class="card">
+  <div id="sec-import" class="card" style="display: flex; flex-direction: column;">
     <div class="card-title">Import PlantNet CSV</div>
     <div class="card-sub">Export from identify.plantnet.org → My profile → My observations → Export CSV</div>
     <div class="drop-zone" id="dz"
@@ -898,9 +890,11 @@ input[type=range]{flex:1;accent-color:var(--green);}
       <div style="font-size:.73rem;color:var(--text-muted);margin-top:2px" id="dz-hint">.csv exported from PlantNet</div>
     </div>
     <input type="file" id="file-in" accept=".csv,.tsv,.txt" style="display:none" onchange="onFile(event)">
+    <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+      <button class="btn btn-secondary" style="padding: 0.35rem 0.7rem; font-size: 0.78rem;" onclick="loadTestCSV(event)">🧪 Load Test CSV</button>
+    </div>
   </div>
 
-  <!-- STEP 2: Plant selection -->
   <div id="sec-plants" class="card hidden">
     <div class="card-title">Select species</div>
     <div class="card-sub" id="plants-sub">0 species imported</div>
@@ -914,7 +908,6 @@ input[type=range]{flex:1;accent-color:var(--green);}
     <div class="plant-list" id="plant-list"></div>
   </div>
 
-  <!-- STEP 3: Options -->
   <div id="sec-options" class="card hidden">
     <div class="card-title">Options</div>
 
@@ -991,7 +984,7 @@ input[type=range]{flex:1;accent-color:var(--green);}
       </select>
     </div>
 
-    <div class="toggle-row">
+    <div class="toggle-row" style="justify-content: center;">
       <label class="toggle-switch">
         <input type="checkbox" id="tog-own" checked>
         <div class="toggle-track"></div><div class="toggle-thumb"></div>
@@ -1004,7 +997,7 @@ input[type=range]{flex:1;accent-color:var(--green);}
 
     </div>
 
-    <div class="toggle-row" style="margin-top:.6rem">
+    <div class="toggle-row" style="margin-top:.6rem; justify-content: center;">
       <label class="toggle-switch">
         <input type="checkbox" id="tog-embed">
         <div class="toggle-track"></div><div class="toggle-thumb"></div>
@@ -1016,12 +1009,11 @@ input[type=range]{flex:1;accent-color:var(--green);}
     </div>
 
 
-    <div class="actions">
+    <div class="actions" style="justify-content: center;">
       <button class="btn btn-primary" id="btn-start" onclick="startGen()">▶ Start generation</button>
     </div>
   </div>
 
-  <!-- STEP 4: Progress -->
   <div id="sec-progress" class="card hidden">
     <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.2rem">
       <div class="card-title">Generating deck</div>
@@ -1039,7 +1031,6 @@ input[type=range]{flex:1;accent-color:var(--green);}
     <div class="log-area" id="log-area"></div>
   </div>
 
-  <!-- STEP 5: Export -->
   <div id="sec-export" class="card hidden">
     <div class="card-title">Deck ready!</div>
     <div class="card-sub">Data from Tela Botanica and PFAF</div>
@@ -1056,7 +1047,7 @@ input[type=range]{flex:1;accent-color:var(--green);}
     </div>
     <div style="font-size:.74rem;color:var(--text-muted);margin-top:.6rem">
       Double-cliquez sur le .apkg pour importer directement dans Anki
-      (ou File → Import). Le type de note PlantNet est inclus dans le fichier.
+      (ou File → Import). Le type de note PlantNet is inclus dans le fichier.
     </div>
   </div>
 </div>
@@ -1079,16 +1070,31 @@ function uploadFile(file) {
     .then(function(r) { return r.json(); })
     .then(function(d) {
       if (d.error) { alert("Error: " + d.error); return; }
-      plants = d.plants;
-      dz.classList.add("done");
-      document.getElementById("dz-icon").textContent = "✅";
-      document.getElementById("dz-label").textContent = file.name + " — " + d.total_obs + " observation(s)";
-      document.getElementById("dz-hint").textContent = d.plants.length + " unique species detected";
-      renderPlants();
-      document.getElementById("sec-plants").classList.remove("hidden");
-      document.getElementById("sec-options").classList.remove("hidden");
+      handleCSVData(d, file.name);
     })
     .catch(function(e) { alert("Upload failed: " + e); });
+}
+
+function loadTestCSV(event) {
+  if (event) event.stopPropagation(); // Prevents triggering the file selector window click
+  fetch("/load_test_csv", { method: "POST" })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { alert("Error loading test CSV: " + d.error); return; }
+      handleCSVData(d, "my-observations_test.csv");
+    })
+    .catch(function(e) { alert("Failed to fetch test CSV: " + e); });
+}
+
+function handleCSVData(d, filename) {
+  plants = d.plants;
+  dz.classList.add("done");
+  document.getElementById("dz-icon").textContent = "✅";
+  document.getElementById("dz-label").textContent = filename + " — " + d.total_obs + " observation(s)";
+  document.getElementById("dz-hint").textContent = d.plants.length + " unique species detected";
+  renderPlants();
+  document.getElementById("sec-plants").classList.remove("hidden");
+  document.getElementById("sec-options").classList.remove("hidden");
 }
 
 // ── Plant list ───────────────────────────────────────────────────────────────
@@ -1389,6 +1395,35 @@ class Handler(BaseHTTPRequestHandler):
                     "separator": "TAB" if sep == "\t" else sep,
                 })
 
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+
+        elif path == "/load_test_csv":
+            try:
+                test_file_path = "sample-test.csv"
+                if not os.path.exists(test_file_path):
+                    self.send_json({"error": "sample-test.csv file not found in directory"}, 404)
+                    return
+                with open(test_file_path, "r", encoding="utf-8", errors="replace") as f:
+                    csv_content = f.read()
+
+                rows, sep = parse_csv(csv_content)
+                if not rows:
+                    self.send_json({"error": "Test CSV is empty or could not be parsed"}, 400)
+                    return
+
+                plants_data = group_by_species(rows)
+                for p in plants_data:
+                    p["selected"] = True
+
+                with state_lock:
+                    state["plants"] = plants_data
+
+                self.send_json({
+                    "plants":    plants_data,
+                    "total_obs": len(rows),
+                    "separator": "TAB" if sep == "\t" else sep,
+                })
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
 
