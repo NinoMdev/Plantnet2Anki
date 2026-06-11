@@ -120,8 +120,33 @@ Finally, sync AnkiDroid with your account from the app — your new cards will a
 
 **Enjoy your learning!** 🌿
 
+---
 
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 See the LICENSE file for details.
+
+
+
+## Credits & Acknowledgements
+
+This tool is built upon the incredible work of global open-science communities and open-source libraries:
+
+### Core Frameworks
+
+* [requests](https://github.com/psf/requests) - Elegant HTTP networking.
+* [Beautiful Soup 4](https://www.crummy.com/software/BeautifulSoup/) - HTML parsing.
+* [genanki](https://github.com/kerrickstaley/genanki) - Powerful programmatic Anki deck creation.
+
+### Biodiversity Data Sources
+
+* **PlantNet** - Species identification services and personal observation data.
+* **GBIF** *(Global Biodiversity Information Facility)* - Global taxonomy, vernacular names, and image archives.
+* **iNaturalist** - Phenomenal community-contributed biodiversity photography.
+* **Tela Botanica** - French botanical reference networks, habitat data, and taxonomy.
+* **Plants For A Future (PFAF)** - Deep ethnobotanical datasets regarding edibility and toxicity.
+
+### Image Copyright Notice
+
+*All photographs retrieved by this script remain the property of their respective creators and are bound by their original open licenses (such as Creative Commons). Users are responsible for ensuring compliance with intellectual property licenses when sharing or distributing generated decks publicly.*
