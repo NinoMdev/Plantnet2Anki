@@ -539,12 +539,6 @@ FRONT_TEMPLATE = """
 """.strip()
 
 
-
-
-
-
-
-
 BACK_TEMPLATE = """
 {{FrontSide}}
 <hr style="border:none;border-top:1px solid #eee;margin:12px 0">
@@ -800,478 +794,6 @@ def run_generation(config, my_gen_id=None):
         log(f"Done — {len(plants)} species, {total_cards} cards, {total_photos} photos", "ok")
 
 
-# ── Embedded HTML ─────────────────────────────────────────────────────────────
-HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PlantNet → Anki</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
-<style>
-:root{--green:#1D9E75;--green-light:#E1F5EE;--green-dark:#085041;--amber:#BA7517;--amber-light:#FAEEDA;--text:#2C2C2A;--text-muted:#888780;--border:rgba(0,0,0,0.12);--bg:#FAFAF8;--white:#fff;--radius:12px;--radius-sm:8px;}
-*{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:2rem 1rem;}
-.container{max-width:760px;margin:0 auto;}
-header{text-align:center;margin-bottom:2rem;}
-header h1{font-family:'DM Serif Display',serif;font-size:2.1rem;font-weight:400;color:var(--green-dark);margin-bottom:.3rem;}
-header p{color:var(--text-muted);font-size:.9rem;}
-.card{background:var(--white);border:.5px solid var(--border);border-radius:var(--radius);padding:1.4rem;margin-bottom:1rem;}
-.card-title{font-family:'DM Serif Display',serif;font-size:1.1rem;font-weight:400;color:var(--green-dark);margin-bottom:.2rem;}
-.card-sub{font-size:.82rem;color:var(--text-muted);margin-bottom:1rem;}
-label{display:block;font-size:.82rem;font-weight:500;margin-bottom:4px;}
-input[type=text],input[type=password],select{width:100%;padding:.5rem .8rem;border:.5px solid var(--border);border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:.87rem;background:var(--bg);color:var(--text);outline:none;transition:border-color .15s;}
-input:focus,select:focus{border-color:var(--green);}
-.form-row{margin-bottom:.85rem;}
-.btn{display:inline-flex;align-items:center;gap:6px;padding:.55rem 1.1rem;border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:.88rem;font-weight:500;cursor:pointer;border:.5px solid var(--border);transition:all .15s;}
-.btn-primary{background:var(--green);color:white;border-color:var(--green);}
-.btn-primary:hover{background:var(--green-dark);}
-.btn-primary:disabled{opacity:.4;cursor:not-allowed;}
-.btn-secondary{background:var(--white);color:var(--text);}
-.btn-secondary:hover{background:#F1EFE8;}
-.actions{display:flex;gap:10px;align-items:center;margin-top:1rem;}
-.notice{padding:.6rem .9rem;border-radius:var(--radius-sm);font-size:.81rem;margin-bottom:.85rem;border-left:3px solid;}
-.notice-info{background:#E6F1FB;color:#0C447C;border-color:#185FA5;}
-.notice-green{background:var(--green-light);color:var(--green-dark);border-color:var(--green);}
-.drop-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:1.75rem 1rem;text-align:center;cursor:pointer;transition:all .2s;background:var(--bg);}
-.drop-zone:hover,.drop-zone.over{border-color:var(--green);background:var(--green-light);}
-.drop-zone.done{border-color:var(--green);border-style:solid;background:var(--green-light);}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:.6rem;}
-.ibtn{display:flex;align-items:center;gap:7px;padding:.5rem .8rem;border:.5px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:.79rem;background:var(--white);transition:all .15s;font-family:'DM Sans',sans-serif;}
-.ibtn.active{border-color:var(--green);background:var(--green-light);color:var(--green-dark);}
-.ibtn .src{margin-left:auto;font-size:.67rem;color:var(--text-muted);font-style:italic;}
-.ibtn.active .src{color:var(--green);}
-.organ-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:.6rem;}
-.obtn{display:flex;flex-direction:column;align-items:center;gap:2px;padding:.6rem .4rem;border:.5px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:.77rem;background:var(--white);transition:all .15s;font-family:'DM Sans',sans-serif;}
-.obtn.active{border-color:var(--green);background:var(--green-light);color:var(--green-dark);}
-.slider-row{display:flex;align-items:center;gap:10px;margin-top:.4rem;}
-.sval{font-weight:500;min-width:20px;color:var(--green-dark);}
-input[type=range]{flex:1;accent-color:var(--green);}
-.plant-list{display:flex;flex-direction:column;gap:5px;max-height:320px;overflow-y:auto;margin-top:.7rem;}
-.pi{display:flex;align-items:center;gap:8px;padding:.55rem .8rem;background:var(--bg);border:.5px solid var(--border);border-radius:var(--radius-sm);font-size:.83rem;}
-.pi.sel{border-color:var(--green);background:var(--green-light);}
-.pi input[type=checkbox]{accent-color:var(--green);width:14px;height:14px;flex-shrink:0;}
-.pname{font-weight:500;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.psci{font-style:italic;color:var(--text-muted);font-size:.77rem;}
-.pmeta{font-size:.71rem;color:var(--text-muted);flex-shrink:0;}
-.badge{display:inline-block;padding:1px 6px;border-radius:20px;font-size:.68rem;font-weight:500;background:#E6F1FB;color:#185FA5;}
-.sel-row{display:flex;justify-content:space-between;font-size:.79rem;color:var(--text-muted);margin-bottom:.4rem;}
-.lbtn{background:none;border:none;color:var(--green);cursor:pointer;font-size:.79rem;font-family:'DM Sans',sans-serif;text-decoration:underline;}
-.prog-bar{width:100%;height:5px;background:#F1EFE8;border-radius:3px;overflow:hidden;margin:.7rem 0;}
-.prog-fill{height:100%;background:var(--green);border-radius:3px;transition:width .3s;}
-.log-area{background:var(--bg);border:.5px solid var(--border);border-radius:var(--radius-sm);padding:.6rem .8rem;font-size:.77rem;font-family:monospace;color:var(--text-muted);max-height:220px;overflow-y:auto;line-height:1.85;}
-.lok{color:var(--green);}.lwarn{color:var(--amber);}
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:.8rem 0;}
-.stat{background:var(--bg);border-radius:var(--radius-sm);padding:.7rem;text-align:center;}
-.snum{font-family:'DM Serif Display',serif;font-size:1.6rem;color:var(--green-dark);}
-.slbl{font-size:.73rem;color:var(--text-muted);}
-.hidden{display:none!important;}
-.toggle-row{display:flex;align-items:center;gap:8px;margin-bottom:.6rem;}
-.toggle-switch{position:relative;width:36px;height:20px;cursor:pointer;flex-shrink:0;}
-.toggle-switch input{opacity:0;width:0;height:0;}
-.toggle-track{position:absolute;inset:0;background:var(--border);border-radius:10px;transition:.2s;}
-.toggle-switch input:checked+.toggle-track{background:var(--green);}
-.toggle-thumb{position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;left:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
-.toggle-switch input:checked~.toggle-thumb{transform:translateX(16px);}
-.toggle-lbl{font-size:.83rem;font-weight:500;}
-</style>
-</head>
-<body>
-<div class="container">
-  <header>
-    <div style="font-size:1.9rem;margin-bottom:.35rem">🌿</div>
-    <h1>PlantNet → Anki</h1>
-    <p>Local tool — all data stays on your machine</p>
-  </header>
-
-  <!-- STEP 1: Import CSV -->
-  <div id="sec-import" class="card">
-    <div class="card-title">Import PlantNet CSV</div>
-    <div class="card-sub">Export from identify.plantnet.org → My profile → My observations → Export CSV</div>
-    <div class="drop-zone" id="dz"
-      onclick="document.getElementById('file-in').click()"
-      ondragover="event.preventDefault();dz.classList.add('over')"
-      ondragleave="dz.classList.remove('over')"
-      ondrop="onDrop(event)">
-      <div style="font-size:1.7rem;margin-bottom:.3rem" id="dz-icon">📂</div>
-      <div style="font-size:.87rem;color:var(--text-muted)" id="dz-label">Drop CSV here or click to browse</div>
-      <div style="font-size:.73rem;color:var(--text-muted);margin-top:2px" id="dz-hint">.csv exported from PlantNet</div>
-    </div>
-    <input type="file" id="file-in" accept=".csv,.tsv,.txt" style="display:none" onchange="onFile(event)">
-  </div>
-
-  <!-- STEP 2: Plant selection -->
-  <div id="sec-plants" class="card hidden">
-    <div class="card-title">Select species</div>
-    <div class="card-sub" id="plants-sub">0 species imported</div>
-    <div class="sel-row">
-      <span id="sel-count">0 selected</span>
-      <span>
-        <button class="lbtn" onclick="selAll(true)">All</button>&nbsp;·&nbsp;
-        <button class="lbtn" onclick="selAll(false)">None</button>
-      </span>
-    </div>
-    <div class="plant-list" id="plant-list"></div>
-  </div>
-
-  <!-- STEP 3: Options -->
-  <div id="sec-options" class="card hidden">
-    <div class="card-title">Options</div>
-
-    <div class="form-row">
-      <label>Deck name</label>
-      <input type="text" id="deck-name" value="PlantNet – Botany">
-    </div>
-
-    <div class="form-row">
-      <label>PlantNet API key <span style="color:var(--text-muted);font-weight:400">(optional — extra photos per organ)</span></label>
-      <input type="password" id="api-key" placeholder="2b10xxxxxxxxxxxxxxxxxxxxxxxx">
-      <div style="font-size:.72rem;color:var(--text-muted);margin-top:3px">Free key at my.plantnet.org · 500 req/day</div>
-    </div>
-
-    <div class="form-row">
-      <label>Extra photo source</label>
-      <select id="photo-source" onchange="updatePhotoSourceHint()">
-        <option value="none">None — own photos only</option>
-        <option value="all" selected>All sources — GBIF → iNaturalist → PlantNet (stops when full)</option>
-        <option value="gbif">GBIF only</option>
-        <option value="inat">iNaturalist only</option>
-        <option value="plantnet">PlantNet only (requires own photo + API key)</option>
-      </select>
-      <div id="photo-source-hint" style="font-size:.72rem;color:var(--text-muted);margin-top:4px">
-        Submits your own photo to PlantNet and retrieves visually similar images per organ.
-      </div>
-    </div>
-
-
-    <div class="form-row">
-      <label style="margin-bottom:.5rem">Organs to fetch photos for</label>
-      <div class="organ-grid">
-        <button class="obtn active" data-organ="flower" onclick="toggleBtn(this)"><span>🌸</span>Flower</button>
-        <button class="obtn active" data-organ="leaf"   onclick="toggleBtn(this)"><span>🍃</span>Leaf</button>
-        <button class="obtn active" data-organ="habit"  onclick="toggleBtn(this)"><span>🌿</span>Habit</button>
-        <button class="obtn"        data-organ="fruit"  onclick="toggleBtn(this)"><span>🍎</span>Fruit</button>
-        <button class="obtn"        data-organ="bark"   onclick="toggleBtn(this)"><span>🪵</span>Bark</button>
-      </div>
-      <div style="font-size:.72rem;color:var(--text-muted);margin-top:5px">
-        Organ labels come from PlantNet. GBIF/iNat photos are stored as untagged.
-      </div>
-    </div>
-
-    <div class="form-row" id="n-photos-row">
-      <label>Photos per organ (max)</label>
-      <div class="slider-row">
-        <input type="range" id="n-photos" min="1" max="5" value="2"
-          oninput="document.getElementById('n-photos-val').textContent=this.value">
-        <span class="sval" id="n-photos-val">2</span>
-      </div>
-    </div>
-
-    <div class="form-row">
-      <label>Max untagged photos <span style="color:var(--text-muted);font-weight:400">(from GBIF/iNat when organ not found)</span></label>
-      <div class="slider-row">
-        <input type="range" id="max-untagged" min="0" max="10" value="3"
-          oninput="document.getElementById('max-untagged-val').textContent=this.value">
-        <span class="sval" id="max-untagged-val">3</span>
-      </div>
-      <div style="font-size:.72rem;color:var(--text-muted);margin-top:3px">
-        Set to 0 to disable untagged photos entirely.
-      </div>
-    </div>
-
-    </div>
-
-    <div class="form-row">
-      <label>Card language / Langue des cartes</label>
-      <select id="lang-select">
-        <option value="en">English</option>
-        <option value="fr">Français</option>
-        <option value="de">Deutsch</option>
-        <option value="es">Español</option>
-      </select>
-    </div>
-
-    <div class="toggle-row">
-      <label class="toggle-switch">
-        <input type="checkbox" id="tog-own" checked>
-        <div class="toggle-track"></div><div class="toggle-thumb"></div>
-      </label>
-      <div>
-        <span class="toggle-lbl">Include own PlantNet photos</span>
-        <div style="font-size:.75rem;color:var(--text-muted)">Photos from your CSV observations. Uncheck to use only enriched photos (GBIF, iNat, PlantNet related).</div>
-      </div>
-    </div>
-
-    </div>
-
-    <div class="toggle-row" style="margin-top:.6rem">
-      <label class="toggle-switch">
-        <input type="checkbox" id="tog-embed">
-        <div class="toggle-track"></div><div class="toggle-thumb"></div>
-      </label>
-      <div>
-        <span class="toggle-lbl">Embed images in .apkg</span>
-        <div style="font-size:.75rem;color:var(--text-muted)">Downloads all photos into the deck — instant loading, works offline. Slower generation, larger file.</div>
-      </div>
-    </div>
-
-
-    <div class="actions">
-      <button class="btn btn-primary" id="btn-start" onclick="startGen()">▶ Start generation</button>
-    </div>
-  </div>
-
-  <!-- STEP 4: Progress -->
-  <div id="sec-progress" class="card hidden">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.2rem">
-      <div class="card-title">Generating deck</div>
-      <button class="btn btn-secondary" id="btn-stop" onclick="stopGen()"
-        style="font-size:.8rem;padding:.35rem .8rem;color:#D85A30;border-color:#D85A30">
-        ■ Stop
-      </button>
-    </div>
-    <div class="card-sub" id="gen-sub">Processing…</div>
-    <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
-    <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--text-muted);margin-bottom:.6rem">
-      <span id="prog-label"></span>
-      <span id="prog-pct">0%</span>
-    </div>
-    <div class="log-area" id="log-area"></div>
-  </div>
-
-  <!-- STEP 5: Export -->
-  <div id="sec-export" class="card hidden">
-    <div class="card-title">Deck ready!</div>
-    <div class="card-sub">Data from Tela Botanica and PFAF</div>
-    <div class="stats">
-      <div class="stat"><div class="snum" id="st-plants">0</div><div class="slbl">Species</div></div>
-      <div class="stat"><div class="snum" id="st-cards">0</div><div class="slbl">Cards</div></div>
-      <div class="stat"><div class="snum" id="st-photos">0</div><div class="slbl">Photos</div></div>
-    </div>
-
-
-    <div class="actions">
-      <button class="btn btn-primary" onclick="downloadDeck()">⬇️ Download deck (.apkg)</button>
-      <button class="btn btn-secondary" onclick="location.reload()">New deck</button>
-    </div>
-    <div style="font-size:.74rem;color:var(--text-muted);margin-top:.6rem">
-      Double-cliquez sur le .apkg pour importer directement dans Anki
-      (ou File → Import). Le type de note PlantNet est inclus dans le fichier.
-    </div>
-  </div>
-</div>
-
-<script>
-var plants = [];
-var csvText = "";
-
-// ── Drag & drop ──────────────────────────────────────────────────────────────
-var dz = document.getElementById("dz");
-function onDrop(e) {
-  e.preventDefault(); dz.classList.remove("over");
-  var f = e.dataTransfer.files[0]; if (f) uploadFile(f);
-}
-function onFile(e) { var f = e.target.files[0]; if (f) uploadFile(f); }
-
-function uploadFile(file) {
-  var fd = new FormData(); fd.append("csv", file);
-  fetch("/upload", { method: "POST", body: fd })
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (d.error) { alert("Error: " + d.error); return; }
-      plants = d.plants;
-      dz.classList.add("done");
-      document.getElementById("dz-icon").textContent = "✅";
-      document.getElementById("dz-label").textContent = file.name + " — " + d.total_obs + " observation(s)";
-      document.getElementById("dz-hint").textContent = d.plants.length + " unique species detected";
-      renderPlants();
-      document.getElementById("sec-plants").classList.remove("hidden");
-      document.getElementById("sec-options").classList.remove("hidden");
-    })
-    .catch(function(e) { alert("Upload failed: " + e); });
-}
-
-// ── Plant list ───────────────────────────────────────────────────────────────
-function renderPlants() {
-  var list = document.getElementById("plant-list");
-  list.innerHTML = "";
-  plants.forEach(function(p, i) {
-    var d = document.createElement("div");
-    d.className = "pi" + (p.selected ? " sel" : "");
-    var badge = p.own_images.length > 0 ? '<span class="badge">📷 ' + p.own_images.length + "</span>" : "";
-    var obs   = p.observations > 1 ? p.observations + " obs." : "";
-    d.innerHTML = '<input type="checkbox"' + (p.selected ? " checked" : "") + ' onchange="toggleP(' + i + ',this.checked)">'
-      + '<div style="flex:1;min-width:0"><div class="pname">' + (p.scientific) + '</div>'
-      + '<div class="psci">' + (p.family||"") + '</div></div>'
-      + '<div class="pmeta">' + badge + (badge && obs ? " " : "") + obs + "</div>";
-    list.appendChild(d);
-  });
-  updateCount();
-  document.getElementById("plants-sub").textContent = plants.length + " species imported";
-}
-function toggleP(i, v) {
-  plants[i].selected = v;
-  document.querySelectorAll(".pi")[i].classList.toggle("sel", v);
-  updateCount();
-}
-function selAll(v) { plants.forEach(function(p){p.selected=v;}); renderPlants(); }
-function updateCount() {
-  var n = plants.filter(function(p){return p.selected;}).length;
-  document.getElementById("sel-count").textContent = n + " selected";
-}
-
-// ── Toggle buttons ───────────────────────────────────────────────────────────
-function toggleBtn(b) { b.classList.toggle("active"); }
-
-function updatePhotoSourceHint() {
-  var src   = document.getElementById("photo-source").value;
-  var hint  = document.getElementById("photo-source-hint");
-  var nrow  = document.getElementById("n-photos-row");
-  var hints = {
-    "none":     "Only your own photos from the PlantNet CSV will be used.",
-    "all":      "PlantNet related images (organ-tagged, 1 API call) + GBIF + iNaturalist for remaining slots (untagged).",
-    "gbif":     "GBIF only — no organ tags, photos stored as untagged.",
-    "inat":     "iNaturalist only — no organ tags, photos stored as untagged.",
-    "plantnet": "PlantNet related images only — organ-tagged, 1 API call. Requires own photo + API key."
-  };
-  hint.textContent = hints[src] || "";
-  nrow.style.display = src === "none" ? "none" : "";
-}
-
-// ── Generation ───────────────────────────────────────────────────────────────
-function startGen() {
-  var selected = plants.filter(function(p){return p.selected;});
-  if (!selected.length) { alert("Select at least one species."); return; }
-
-  var info     = Array.from(document.querySelectorAll(".ibtn.active")).map(function(b){return b.dataset.info;});
-  var organs   = Array.from(document.querySelectorAll(".obtn.active")).map(function(b){return b.dataset.organ;});
-  var photoSrc = document.getElementById("photo-source").value;
-  var config  = {
-    plants:       selected,
-    deck_name:    document.getElementById("deck-name").value || "PlantNet – Botany",
-    api_key:      document.getElementById("api-key").value.trim(),
-    n_photos:     photoSrc === "none" ? 0 : parseInt(document.getElementById("n-photos").value),
-    max_untagged: parseInt(document.getElementById("max-untagged").value),
-    photo_source: photoSrc,
-    organs:       organs,
-    info:         info,
-    lang:         document.getElementById("lang-select").value,
-    include_own:  document.getElementById("tog-own").checked,
-    embed_images: document.getElementById("tog-embed").checked,
-  };
-
-  // Reset progress UI for fresh run
-  document.getElementById("btn-start").disabled = true;
-  document.getElementById("sec-progress").classList.remove("hidden");
-  document.getElementById("log-area").innerHTML = "";
-  document.getElementById("gen-sub").textContent = "Processing…";
-  document.getElementById("prog-fill").style.width = "0%";
-  document.getElementById("prog-pct").textContent = "0%";
-  document.getElementById("prog-label").textContent = "";
-  var stopBtn = document.getElementById("btn-stop");
-  if (stopBtn) { stopBtn.style.display = ""; stopBtn.disabled = false; stopBtn.textContent = "■ Stop"; }
-
-  fetch("/generate", {
-    method:  "POST",
-    headers: {"Content-Type": "application/json"},
-    body:    JSON.stringify(config)
-  }).then(function(r){ return r.json(); })
-    .then(function(d){ if (d.error) alert("Error: " + d.error); })
-    .catch(function(e){ alert("Error: " + e); });
-
-  pollProgress();
-}
-
-function stopGen() {
-  document.getElementById("btn-stop").disabled = true;
-  document.getElementById("btn-stop").textContent = "Stopping…";
-  fetch("/stop", { method: "POST" })
-    .catch(function() {});
-}
-
-function pollProgress() {
-  fetch("/status").then(function(r){return r.json();}).then(function(d) {
-    // Update progress bar
-    document.getElementById("prog-fill").style.width = d.progress + "%";
-    document.getElementById("prog-pct").textContent  = d.progress + "%";
-    document.getElementById("prog-label").textContent = d.progress_label || "";
-
-    // Append new log lines
-    var area = document.getElementById("log-area");
-    (d.new_logs || []).forEach(function(entry) {
-      var div = document.createElement("div");
-      if (entry.level === "ok")   div.className = "lok";
-      if (entry.level === "warn") div.className = "lwarn";
-      div.textContent = "> " + entry.msg;
-      area.appendChild(div);
-      area.scrollTop = area.scrollHeight;
-    });
-
-    if (d.stopped) {
-      document.getElementById("gen-sub").textContent = "Stopped.";
-      document.getElementById("btn-stop").style.display = "none";
-      document.getElementById("btn-start").disabled = false;
-      return;
-    }
-    if (d.done) {
-      document.getElementById("gen-sub").textContent = "Done!";
-      document.getElementById("btn-stop").style.display = "none";
-      // Parse stats from last log lines
-      var logs = d.all_logs || [];
-      var lastOk = logs.filter(function(l){return l.level==="ok";}).pop();
-      if (lastOk && lastOk.msg) {
-        var m = lastOk.msg.match(/(\d+) species, (\d+) cards, (\d+) photos/);
-        if (m) {
-          document.getElementById("st-plants").textContent = m[1];
-          document.getElementById("st-cards").textContent  = m[2];
-          document.getElementById("st-photos").textContent = m[3];
-        }
-      }
-      document.getElementById("sec-export").classList.remove("hidden");
-    } else {
-      setTimeout(pollProgress, 600);
-    }
-  }).catch(function(){ setTimeout(pollProgress, 1000); });
-}
-
-function setupNoteType() {
-  var btn = document.getElementById("btn-ac");
-  var status = document.getElementById("ac-status");
-  btn.disabled = true;
-  btn.textContent = "Setting up…";
-  status.textContent = "Connecting to AnkiConnect…";
-  status.style.color = "var(--text-muted)";
-  fetch("/setup_notetype", { method: "POST" })
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (d.ok) {
-        status.textContent = "✓ " + d.message;
-        status.style.color = "var(--green-dark)";
-        btn.textContent = "✓ Done";
-      } else {
-        status.textContent = "✗ " + d.message;
-        status.style.color = "#D85A30";
-        btn.disabled = false;
-        btn.textContent = "Retry";
-      }
-    })
-    .catch(function(e) {
-      status.textContent = "Error: " + e;
-      status.style.color = "#D85A30";
-      btn.disabled = false;
-      btn.textContent = "Retry";
-    });
-}
-
-function downloadDeck() {
-  window.location.href = "/download";
-}
-</script>
-</body>
-</html>
-"""
-
-
 # ── HTTP request handler ──────────────────────────────────────────────────────
 log_cursor = 0   # tracks how many log lines the client has already seen
 
@@ -1291,14 +813,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        script_dir = Path(__file__).parent
 
         if path == "/" or path == "/index.html":
-            body = HTML.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
+            html_path = script_dir / "index.html"
+            if html_path.exists():
+                with open(html_path, "r", encoding="utf-8") as f:
+                    body = f.read().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_json({"error": "index.html not found"}, 404)
+
+        elif path == "/style.css":
+            css_path = script_dir / "style.css"
+            if css_path.exists():
+                with open(css_path, "r", encoding="utf-8") as f:
+                    body = f.read().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/css; charset=utf-8")
+                self.send_header("Content-Length", len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_json({"error": "style.css not found"}, 404)
 
         elif path == "/status":
             global log_cursor
@@ -1389,6 +930,35 @@ class Handler(BaseHTTPRequestHandler):
                     "separator": "TAB" if sep == "\t" else sep,
                 })
 
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+
+        elif path == "/load_test_csv":
+            try:
+                test_file_path = "sample-test.csv"
+                if not os.path.exists(test_file_path):
+                    self.send_json({"error": "sample-test.csv file not found in directory"}, 404)
+                    return
+                with open(test_file_path, "r", encoding="utf-8", errors="replace") as f:
+                    csv_content = f.read()
+
+                rows, sep = parse_csv(csv_content)
+                if not rows:
+                    self.send_json({"error": "Test CSV is empty or could not be parsed"}, 400)
+                    return
+
+                plants_data = group_by_species(rows)
+                for p in plants_data:
+                    p["selected"] = True
+
+                with state_lock:
+                    state["plants"] = plants_data
+
+                self.send_json({
+                    "plants":    plants_data,
+                    "total_obs": len(rows),
+                    "separator": "TAB" if sep == "\t" else sep,
+                })
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
 

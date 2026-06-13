@@ -8,7 +8,8 @@ This is initially a personal project that I am sharing because I think it can be
 
 Enjoy, and don't hesitate to share any comments or suggestions. I am not a developer, so some features may be missing and bugs may occur.
 
-This project was coded with the assistance of [Claude AI](https://claude.ai).
+[!NOTE] This project was coded with the assistance of [Claude AI](https://claude.ai). 
+
 
 ## Quick description
 
@@ -58,7 +59,7 @@ This program works on Linux, Windows, and macOS.
 1. Open a terminal and navigate to the `PlantNet2Anki` folder
 2. Run the following command to install:
 ```bash
-   chmod +x install.sh && ./install.sh
+   sudo ./install.sh
 ```
    `chmod +x` grants execution rights to the script (you may need `sudo` for this). `install.sh` then handles the installation automatically.
 3. Launch the app with:
@@ -97,7 +98,8 @@ You will also need a **PlantNet developer account** to obtain an API key, which 
 Done with the setup? You are now ready to generate your deck.
 
 1. Launch PlantNet2Anki (see [Installation](#installation))
-2. In the interface that opens, import the PlantNet `.csv` file you downloaded earlier
+2. In the interface that opens, import the PlantNet `.csv` file you downloaded earlier. 
+*(Alternatively, you can click **Load test CSV** to try the application out with a sample file first.)*
 3. Enter the name of your deck. If you already have an existing PlantNet2Anki deck and want to merge them, use the **exact same name** to avoid confusion
 4. Paste your PlantNet API key
 5. Configure the photo enrichment options:
@@ -110,7 +112,7 @@ Done with the setup? You are now ready to generate your deck.
 6. Check **"Include own PlantNet photos"** if you want to include the photos from your personal observations
 7. Check **"Embed images in .apkg"** to bundle all photos inside the deck file. This is recommended — it enables offline use and instant photo loading. Note that embedded decks can be significantly larger; if file size is a concern, leave this unchecked to use image URLs instead
 8. Click **"Start generation"**. This may take a while depending on the number of species
-9. Once complete, click **"Download deck"** to save the `.apkg` file
+9.  Once complete, click **"Download deck"** to save the `.apkg` file
 
 Then, open Anki on your computer: **File → Import**, and select your `.apkg` file. Anki will automatically detect and merge this deck with any existing PlantNet2Anki deck.
 
@@ -118,8 +120,33 @@ Finally, sync AnkiDroid with your account from the app — your new cards will a
 
 **Enjoy your learning!** 🌿
 
+---
 
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 See the LICENSE file for details.
+
+
+
+## Credits & Acknowledgements
+
+This tool is built upon the incredible work of global open-science communities and open-source libraries:
+
+### Core Frameworks
+
+* [requests](https://github.com/psf/requests) - Elegant HTTP networking.
+* [Beautiful Soup 4](https://www.crummy.com/software/BeautifulSoup/) - HTML parsing.
+* [genanki](https://github.com/kerrickstaley/genanki) - Powerful programmatic Anki deck creation.
+
+### Biodiversity Data Sources
+
+* **PlantNet** - Species identification services and personal observation data.
+* **GBIF** *(Global Biodiversity Information Facility)* - Global taxonomy, vernacular names, and image archives.
+* **iNaturalist** - Phenomenal community-contributed biodiversity photography.
+* **Tela Botanica** - French botanical reference networks, habitat data, and taxonomy.
+* **Plants For A Future (PFAF)** - Deep ethnobotanical datasets regarding edibility and toxicity.
+
+### Image Copyright Notice
+
+*All photographs retrieved by this script remain the property of their respective creators and are bound by their original open licenses (such as Creative Commons). Users are responsible for ensuring compliance with intellectual property licenses when sharing or distributing generated decks publicly.*
