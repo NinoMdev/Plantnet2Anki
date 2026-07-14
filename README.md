@@ -45,6 +45,8 @@ You should review your deck after generation and adjust names if they are not co
 
 No need to download anything : just [Try online Plantnet2Anki](https://plantnet2anki.onrender.com)
 Follow the *Generate a deck from Anki* guide below.
+> [!Note]
+> When using this version, some photos may not be available for download. This is normal behaviour. Adapt the number of pictures you enrich your deck with in consequence. 
 
 ## App version : setup
 
