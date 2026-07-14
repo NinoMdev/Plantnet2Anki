@@ -3,6 +3,7 @@ services:
     name: plantnet2anki
     runtime: python
     plan: free
+    rootDir: web
     buildCommand: pip install -r requirements.txt
     startCommand: python plantnet2anki_gui.py
     envVars:
