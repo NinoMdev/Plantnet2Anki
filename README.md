@@ -13,7 +13,7 @@ Enjoy, and don't hesitate to share any comments or suggestions. I am not a devel
 
 ## Quick description
 
-This project is built with Python and uses the packages `requests`, `beautifulsoup4`, and `genanki`. See `requirements.txt` for details.
+This project is built with Python and uses the packages `requests`, and `genanki`. See `requirements.txt` for details.
 
 It opens a graphical interface that allows you to:
 
