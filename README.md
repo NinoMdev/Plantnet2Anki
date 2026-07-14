@@ -21,11 +21,10 @@ It opens a graphical interface that allows you to:
 - **Select** the species to include in your deck
 - **Enrich** each species with photos. You can configure:
   - the number of photos per species
-  - the organs to look for (flower, leaf, etc.)
-  - the photo source: by default, the app searches GBIF first, then iNaturalist, then the PlantNet API
+  - the photo source: by default, the app searches GBIF first, then the PlantNet API. This is the recommended usage.
 - **Embed** photos directly into the `.apkg` file. This is recommended, as it allows offline use and instant loading in each card.
 
-> Common name can be find in English, French, Deutsch, or Espanol. If not find in French, Deutsch or Espanol, the name will be diplayed in English. 
+> By default, the common names are the one found in the PlantNet csv, but another language can be add in English, French, German, or Spanish. If not find in French, German or Spanish, the name will be diplayed in English. 
 > Be aware that deck generation can take some time and produce a large file if you select many photos per species or have a large number of observations.
 
 ### Card architecture
@@ -35,10 +34,10 @@ Each species is represented by a **single card**. The front always shows one pho
 ### A note on automatic enrichment
 
 Common names and photos are retrieved automatically. Results may occasionally be imperfect:
-- Photos can sometimes be of poor quality or hard to identify
+- Photos can sometimes be of poor quality or hard to identify. A curation step has been add to select only good pictures. 
 - Common names may differ from what you expect — for instance, *Crataegus azarolus* was assigned the name *Azérolier* (French) rather than the more generic *Aubépine*, even though the whole genus *Crataegus* is commonly called *Aubépine* in French
 
-You should review your deck after generation and adjust names or remove unsatisfactory photos if needed.
+You should review your deck after generation and adjust names if they are not correct.
 
 ## Installation
 
@@ -98,21 +97,19 @@ You will also need a **PlantNet developer account** to obtain an API key, which 
 Done with the setup? You are now ready to generate your deck.
 
 1. Launch PlantNet2Anki (see [Installation](#installation))
-2. In the interface that opens, import the PlantNet `.csv` file you downloaded earlier. 
+2. In the interface that opens, import the PlantNet `.csv` file you downloaded earlier. You can substract a previous csv from the one you load using the *Remove species from a previous csv option*.
 *(Alternatively, you can click **Load test CSV** to try the application out with a sample file first.)*
-3. Enter the name of your deck. If you already have an existing PlantNet2Anki deck and want to merge them, use the **exact same name** to avoid confusion
-4. Paste your PlantNet API key
+3. Enter the name of your deck. If you already have an existing PlantNet2Anki deck and want to merge them, use the **exact same name** to avoid confusion.
+4. Paste your PlantNet API key if you want to extract photos from PlantNet.
 5. Configure the photo enrichment options:
-   - **Organs**: select which organs to look for (flower, leaf, etc.)
-   - **Photos per organ**: number of photos to retrieve per organ
-   - **Max untagged photos**: maximum number of photos without an organ tag to include as a complement
-
-   > Most species have a limited number of organ-tagged photos available. Flowers and leaves are usually well covered, but other organs often are not. The script targets `n × m` photos in total (n organs × m photos per organ), and fills remaining slots with untagged photos up to the specified limit. This balances variety across organs with a guaranteed minimum number of photos even when organ tags are scarce, while keeping deck size manageable.
+   - **Number of photos per species**: number of photos to include per species.
 
 6. Check **"Include own PlantNet photos"** if you want to include the photos from your personal observations
 7. Check **"Embed images in .apkg"** to bundle all photos inside the deck file. This is recommended — it enables offline use and instant photo loading. Note that embedded decks can be significantly larger; if file size is a concern, leave this unchecked to use image URLs instead
-8. Click **"Start generation"**. This may take a while depending on the number of species
-9.  Once complete, click **"Download deck"** to save the `.apkg` file
+8. Check **Review photos before generating the deck** to review photo and keep only photo of good qualities, showing photos that can be used to identify the species.
+9. Click **"Start generation"**. This may take a while depending on the number of species
+10. Review your pictures. Please use GBIF in priority. If only bad pictures are found in GBIF, you can then use PlantNet to find as a source to find up to 6 pictures of the species.
+11.  Once complete, click **"Download deck"** to save the `.apkg` file
 
 Then, open Anki on your computer: **File → Import**, and select your `.apkg` file. Anki will automatically detect and merge this deck with any existing PlantNet2Anki deck.
 
@@ -143,9 +140,6 @@ This tool is built upon the incredible work of global open-science communities a
 
 * **PlantNet** - Species identification services and personal observation data.
 * **GBIF** *(Global Biodiversity Information Facility)* - Global taxonomy, vernacular names, and image archives.
-* **iNaturalist** - Phenomenal community-contributed biodiversity photography.
-* **Tela Botanica** - French botanical reference networks, habitat data, and taxonomy.
-* **Plants For A Future (PFAF)** - Deep ethnobotanical datasets regarding edibility and toxicity.
 
 ### Image Copyright Notice
 
