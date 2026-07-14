@@ -70,9 +70,17 @@ This program works on Linux, Windows, and macOS.
 > [!NOTE]
 > `chmod +x` only needs to be run once per script. After that, you can simply use `./launch.sh` to start the app.
 
-## A-to-Z user guide
+# A-to-Z user guide
+## Web version 
+
+[Try online Plantnet2Anki](https://plantnet2anki.onrender.com)
+
+## App version
+
+If the web page is down, or if you want to use the local app version, you can download and launch the app on your computer :
 
 ### Anki setup
+
 
 I personally use Anki on my phone (Android, via AnkiDroid). I am not sure how the iOS version behaves, but the process should be similar.
 
