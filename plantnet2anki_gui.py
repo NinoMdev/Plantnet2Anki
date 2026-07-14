@@ -10,7 +10,7 @@ Run:
 Then open http://localhost:7842 in your browser (opened automatically).
 
 Requirements:
-    pip install requests beautifulsoup4
+    pip install requests genanki
 """
 
 import csv
@@ -31,29 +31,18 @@ from urllib.parse import parse_qs, urlparse
 # ── Dependency check ──────────────────────────────────────────────────────────
 try:
     import requests
-    from bs4 import BeautifulSoup
     import genanki
 except ImportError as _missing:
     print(f"Missing dependency: {_missing}")
     print("Please run:")
-    print("  pip install requests beautifulsoup4 genanki")
+    print("  pip install requests genanki")
     sys.exit(1)
 
 PORT = 7842
 
 # ── Botanical constants ───────────────────────────────────────────────────────
-TELA_BASE    = "https://api.tela-botanica.org/service:eflore:0.1"
-PFAF_BASE    = "https://pfaf.org/user/plant.aspx"
 PLANTNET_API = "https://my-api.plantnet.org/v2/identify/all"
 HEADERS      = {"User-Agent": "plantnet2anki-gui/1.0"}
-
-MONTHS_EN = ["January","February","March","April","May","June",
-             "July","August","September","October","November","December"]
-BIO_TYPE_MAP = {
-    "Ph":"Phanerophyte (tree/shrub)", "Ch":"Chamaephyte (dwarf shrub)",
-    "H":"Hemicryptophyte (perennial herb)", "G":"Geophyte (bulb/rhizome)",
-    "Th":"Therophyte (annual)", "HH":"Helophyte (marsh plant)",
-}
 
 # ── Global state ──────────────────────────────────────────────────────────────
 state = {
@@ -166,7 +155,7 @@ def group_by_species(rows):
     return list(by.values())
 
 
-# ── Tela Botanica ─────────────────────────────────────────────────────────────
+# ── Name utilities ────────────────────────────────────────────────────────────
 def clean_scientific_name(name):
     """
     Strip author citation from scientific name.
@@ -188,117 +177,6 @@ def clean_scientific_name(name):
         return " ".join(tokens[:4])
     # Otherwise keep only genus + species epithet
     return " ".join(tokens[:2])
-
-
-def bdtfx_search(name, mode="exacte"):
-    """Query BDTFX and return first matching taxon dict or None."""
-    url = (f"{TELA_BASE}/bdtfx/taxons"
-           f"?recherche={mode}&masque.ns={requests.utils.quote(name)}"
-           f"&retour.champs=num_nom,nom_sci,nom_vernaculaire,famille"
-           f"&navigation.limite=1&retour.format=json")
-    r = requests.get(url, headers=HEADERS, timeout=10)
-    if r.status_code != 200:
-        return None, f"HTTP {r.status_code}"
-    data    = r.json()
-    entries = [v for v in data.values() if isinstance(v, dict) and v.get("num_nom")]
-    return (entries[0] if entries else None), "ok"
-
-
-def fetch_tela(sci, options):
-    result = {}
-    try:
-        cleaned = clean_scientific_name(sci)
-        log_extra = f" (cleaned: '{cleaned}')" if cleaned != sci else ""
-
-        # 1. Try exact match on cleaned name
-        taxon, st = bdtfx_search(cleaned, "exacte")
-
-        # 2. Fallback: fuzzy search on cleaned name
-        if taxon is None:
-            taxon, st = bdtfx_search(cleaned, "floue")
-
-        # 3. Fallback: fuzzy search on genus only
-        if taxon is None:
-            genus = cleaned.split()[0]
-            taxon, st = bdtfx_search(genus, "floue")
-            if taxon:
-                log(f"    BDTFX: genus-only match ({genus}) → {taxon.get('nom_sci','?')}", "warn")
-
-        if taxon is None:
-            return result, f"not in BDTFX{log_extra}"
-
-        num_nom = taxon["num_nom"]
-        num_nom = taxon["num_nom"]
-        # Always fetch vernacular name — used on the card regardless of options
-        if taxon.get("nom_vernaculaire"):
-            result["common_name"] = taxon["nom_vernaculaire"]
-        if taxon.get("famille"):
-            result["tb_family"] = taxon["famille"]
-
-        r2 = requests.get(f"{TELA_BASE}/baseflor/taxons/{num_nom}?retour.format=json",
-                          headers=HEADERS, timeout=10)
-        if r2.status_code != 200:
-            return result, f"BDTFX OK, Baseflor HTTP {r2.status_code}"
-        bf = r2.json()
-        if not isinstance(bf, dict):
-            return result, "Baseflor: unexpected format"
-        if "flowering" in options:
-            d  = bf.get("mois_debut_floraison") or bf.get("mois-debut-floraison")
-            f_ = bf.get("mois_fin_floraison")   or bf.get("mois-fin-floraison")
-            if d and f_:
-                try: result["flowering"] = f"{MONTHS_EN[int(d)-1]} – {MONTHS_EN[int(f_)-1]}"
-                except: result["flowering"] = f"{d} – {f_}"
-        if "perennial" in options:
-            tb = bf.get("type_biologique") or bf.get("type-biologique", "")
-            if tb:
-                code = re.split(r"[,\s/]", tb)[0]
-                result["perennial"] = BIO_TYPE_MAP.get(code, tb)
-        if "habitat" in options:
-            h = bf.get("syntaxon") or bf.get("habitat") or bf.get("milieu", "")
-            if h: result["habitat"] = h[:200]
-        if "description" in options:
-            desc = bf.get("commentaire") or bf.get("description", "")
-            if desc: result["description"] = desc[:300]
-
-        found = [k for k in result if k != "tb_family"]
-        return result, ("OK: " + ", ".join(found)) if found else f"OK (num_nom={num_nom}) — no Baseflor data"
-    except Exception as e:
-        return result, f"error: {e}"
-
-
-# ── PFAF ──────────────────────────────────────────────────────────────────────
-def fetch_pfaf(sci, options):
-    result = {}
-    if not ({"edible","medicinal","toxicity"} & set(options)):
-        return result, "skipped"
-    try:
-        r = requests.get(f"{PFAF_BASE}?LatinName={sci.replace(' ','+')}", headers=HEADERS, timeout=12)
-        if r.status_code != 200:
-            return result, f"HTTP {r.status_code}"
-        if "Plant not found" in r.text or len(r.text) < 500:
-            return result, "not in PFAF"
-        soup = BeautifulSoup(r.text, "html.parser")
-        def extract(label):
-            for tag in soup.find_all(["h2","h3","td","th"]):
-                if label.lower() in tag.get_text().lower():
-                    nxt = tag.find_next_sibling()
-                    if nxt: return nxt.get_text(" ", strip=True)[:300]
-                    parent = tag.find_parent("tr")
-                    if parent:
-                        cells = parent.find_all("td")
-                        if len(cells) > 1: return cells[-1].get_text(" ", strip=True)[:300]
-            return ""
-        if "edible"    in options:
-            v = extract("Edible Uses");    result["edible"]    = v if len(v)>10 else ""
-        if "medicinal" in options:
-            v = extract("Medicinal Uses"); result["medicinal"] = v if len(v)>10 else ""
-        if "toxicity"  in options:
-            v = extract("Known Hazards"); result["toxicity"]  = v if len(v)>5  else ""
-        result = {k: v for k, v in result.items() if v}
-        found = list(result.keys())
-        return result, ("OK: " + ", ".join(found)) if found else "page found but no data extracted"
-    except Exception as e:
-        return result, f"error: {e}"
 
 def _norm_name(s):
     """Normalize a name for comparison: lowercase, no accents, no extra spaces."""
@@ -852,23 +730,10 @@ def collect_photo_slots(images, lang="en"):
 def build_info_html(plant, lang="en"):
     i = plant.get("info", {})
     rows = []
-    fam = plant.get("family") or i.get("tb_family", "")
-    if lang == "fr":
-        if fam:               rows.append(f"<b>Famille</b> : {fam}")
-        if i.get("flowering"):    rows.append(f"<b>Floraison</b> : {i['flowering']} <small style='color:#aaa'>(Tela Botanica)</small>")
-        if i.get("perennial"):    rows.append(f"<b>Type bio.</b> : {i['perennial']} <small style='color:#aaa'>(Tela Botanica)</small>")
-        if i.get("habitat"):      rows.append(f"<b>Habitat</b> : {i['habitat']} <small style='color:#aaa'>(Tela Botanica)</small>")
-        if i.get("edible"):       rows.append(f"<b>Comestible</b> : {i['edible']} <small style='color:#aaa'>(PFAF)</small>")
-        if i.get("medicinal"):    rows.append(f"<b>Médicinal</b> : {i['medicinal']} <small style='color:#aaa'>(PFAF)</small>")
-        if i.get("toxicity"):     rows.append(f"<b>Toxicité</b> : {i['toxicity']} <small style='color:#aaa'>(PFAF)</small>")
-    else:
-        if fam:               rows.append(f"<b>Family</b>: {fam}")
-        if i.get("flowering"):    rows.append(f"<b>Flowering</b>: {i['flowering']} <small style='color:#aaa'>(Tela Botanica)</small>")
-        if i.get("perennial"):    rows.append(f"<b>Bio. type</b>: {i['perennial']} <small style='color:#aaa'>(Tela Botanica)</small>")
-        if i.get("habitat"):      rows.append(f"<b>Habitat</b>: {i['habitat']} <small style='color:#aaa'>(Tela Botanica)</small>")
-        if i.get("edible"):       rows.append(f"<b>Edible</b>: {i['edible']} <small style='color:#aaa'>(PFAF)</small>")
-        if i.get("medicinal"):    rows.append(f"<b>Medicinal</b>: {i['medicinal']} <small style='color:#aaa'>(PFAF)</small>")
-        if i.get("toxicity"):     rows.append(f"<b>Toxicity</b>: {i['toxicity']} <small style='color:#aaa'>(PFAF)</small>")
+    fam = plant.get("family", "")
+    if fam:
+        label = "Famille" if lang == "fr" else "Family"
+        rows.append(f"<b>{label}</b> : {fam}" if lang == "fr" else f"<b>{label}</b>: {fam}")
 
     extra_name = i.get("extra_common_name", "")
     extra_lang = i.get("extra_lang", "")

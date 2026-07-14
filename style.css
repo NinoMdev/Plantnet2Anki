@@ -159,39 +159,6 @@ input:focus, select:focus {
   border-style: solid;
   background: var(--green-light);
 }
-.info-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-top: .6rem;
-}
-.ibtn {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: .5rem .8rem;
-  border: .5px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: .79rem;
-  background: var(--white);
-  transition: all .15s;
-  font-family: 'DM Sans', sans-serif;
-}
-.ibtn.active {
-  border-color: var(--green);
-  background: var(--green-light);
-  color: var(--green-dark);
-}
-.ibtn .src {
-  margin-left: auto;
-  font-size: .67rem;
-  color: var(--text-muted);
-  font-style: italic;
-}
-.ibtn.active .src {
-  color: var(--green);
-}
 .slider-row {
   display: flex;
   align-items: center;

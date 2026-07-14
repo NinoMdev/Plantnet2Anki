@@ -203,7 +203,7 @@
 
   <div id="sec-export" class="card hidden">
     <div class="card-title">Deck ready!</div>
-    <div class="card-sub">Data from Tela Botanica and PFAF</div>
+    <div class="card-sub">Ready to import into Anki</div>
     <div class="stats">
       <div class="stat"><div class="snum" id="st-plants">0</div><div class="slbl">Species</div></div>
       <div class="stat"><div class="snum" id="st-cards">0</div><div class="slbl">Cards</div></div>
@@ -324,9 +324,6 @@ function updateCount() {
   document.getElementById("sel-count").textContent = n + " selected";
 }
 
-// ── Toggle buttons ───────────────────────────────────────────────────────────
-function toggleBtn(b) { b.classList.toggle("active"); }
-
 function updatePhotoSourceHint() {
   var src   = document.getElementById("photo-source").value;
   var hint  = document.getElementById("photo-source-hint");
@@ -346,7 +343,6 @@ function startGen() {
   var selected = plants.filter(function(p){return p.selected;});
   if (!selected.length) { alert("Select at least one species."); return; }
 
-  var info     = Array.from(document.querySelectorAll(".ibtn.active")).map(function(b){return b.dataset.info;});
   var photoSrc = document.getElementById("photo-source").value;
   var config  = {
     plants:       selected,
@@ -354,7 +350,6 @@ function startGen() {
     api_key:      document.getElementById("api-key").value.trim(),
     n_photos:     photoSrc === "none" ? 0 : parseInt(document.getElementById("n-photos").value),
     photo_source: photoSrc,
-    info:         info,
     lang:         document.getElementById("lang-select").value,
     include_own:  document.getElementById("tog-own").checked,
     embed_images: document.getElementById("tog-embed").checked,
