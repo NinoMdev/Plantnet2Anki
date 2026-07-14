@@ -8,7 +8,8 @@ This is initially a personal project that I am sharing because I think it can be
 
 Enjoy, and don't hesitate to share any comments or suggestions. I am not a developer, so some features may be missing and bugs may occur.
 
-> [!NOTE] This project was coded with the assistance of [Claude AI](https://claude.ai). 
+> [!NOTE] 
+> This project was coded with the assistance of [Claude AI](https://claude.ai). 
 
 
 ## Quick description
