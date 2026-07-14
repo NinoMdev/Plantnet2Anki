@@ -1199,7 +1199,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             safe_name = re.sub(r"[^\w\-]", "_", name) + ".apkg"
             self.send_response(200)
-            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
             self.send_header("Content-Length", len(pkg))
             self.end_headers()
