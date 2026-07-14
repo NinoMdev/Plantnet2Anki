@@ -40,21 +40,30 @@ Common names and photos are retrieved automatically. Results may occasionally be
 
 You should review your deck after generation and adjust names if they are not correct.
 
-## Installation
+# A-to-Z user guide
+## Web version 
+
+No need to download anything : just [Try online Plantnet2Anki](https://plantnet2anki.onrender.com)
+
+## App version
+
+If the web page is down, or if you want to use the local app version, you can download and launch the app on your computer :
+
+### Installation
 
 This program works on Linux, Windows, and macOS.
 
-### Prerequisites
+#### Prerequisites
 
 - Python >= 3.8 — make sure it is installed and working on your machine ([download here](https://www.python.org/downloads/))
 
-### Windows
+#### Windows
 
 1. Download and extract the `PlantNet2Anki` folder
 2. Inside the extracted folder, double-click `install.bat` and wait for the installation to complete
 3. Launch the app by double-clicking `launch.bat`
 
-### Linux / macOS
+#### Linux / macOS
 
 1. Open a terminal and navigate to the `PlantNet2Anki` folder
 2. Run the following command to install:
@@ -70,19 +79,10 @@ This program works on Linux, Windows, and macOS.
 > [!NOTE]
 > `chmod +x` only needs to be run once per script. After that, you can simply use `./launch.sh` to start the app.
 
-# A-to-Z user guide
-## Web version 
-
-[Try online Plantnet2Anki](https://plantnet2anki.onrender.com)
-
-## App version
-
-If the web page is down, or if you want to use the local app version, you can download and launch the app on your computer :
-
 ### Anki setup
 
 
-I personally use Anki on my phone (Android, via AnkiDroid). I am not sure how the iOS version behaves, but the process should be similar.
+I personally use Anki on my phone (Android, via AnkiDroid). I am not sure how the other iOS version behaves, but the process should be similar.
 
 Download Anki on your computer and make sure you are logged in to the same account as on your phone. This will allow your decks to sync automatically between devices.
 
