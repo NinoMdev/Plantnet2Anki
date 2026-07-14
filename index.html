@@ -44,6 +44,11 @@
       </span>
     </div>
     <div class="plant-list" id="plant-list"></div>
+    <div class="sel-row" style="margin-top:.6rem">
+      <button class="lbtn" onclick="document.getElementById('diff-file-in').click()">📄 Remove species from a previous CSV</button>
+      <input type="file" id="diff-file-in" accept=".csv,.tsv,.txt" style="display:none" onchange="onDiffFile(event)">
+    </div>
+    <div id="diff-status" style="font-size:.72rem;color:var(--text-muted);margin-top:2px"></div>
   </div>
 
   <div id="sec-options" class="card hidden">
@@ -55,67 +60,59 @@
     </div>
 
     <div class="form-row">
-      <label>PlantNet API key <span style="color:var(--text-muted);font-weight:400">(optional — extra photos per organ)</span></label>
+      <label>PlantNet API key <span style="color:var(--text-muted);font-weight:400">(optional - to get photos from PlantNet)</span></label>
       <input type="password" id="api-key" placeholder="2b10xxxxxxxxxxxxxxxxxxxxxxxx">
       <div style="font-size:.72rem;color:var(--text-muted);margin-top:3px">Free key at my.plantnet.org · 500 req/day</div>
     </div>
 
     <div class="form-row">
-      <label>Extra photo source</label>
+      <label>Photo source</label>
       <select id="photo-source" onchange="updatePhotoSourceHint()">
         <option value="none">None — own photos only</option>
-        <option value="all" selected>All sources — GBIF → iNaturalist → PlantNet (stops when full)</option>
+        <option value="all" selected>All sources — GBIF → PlantNet (stops when full)</option>
         <option value="gbif">GBIF only</option>
-        <option value="inat">iNaturalist only</option>
         <option value="plantnet">PlantNet only (requires own photo + API key)</option>
       </select>
       <div id="photo-source-hint" style="font-size:.72rem;color:var(--text-muted);margin-top:4px">
-        Submits your own photo to PlantNet and retrieves visually similar images per organ.
-      </div>
-    </div>
-
-    <div class="form-row">
-      <label style="margin-bottom:.5rem">Organs to fetch photos for</label>
-      <div class="organ-grid">
-        <button class="obtn active" data-organ="flower" onclick="toggleBtn(this)"><span>🌸</span>Flower</button>
-        <button class="obtn active" data-organ="leaf"   onclick="toggleBtn(this)"><span>🍃</span>Leaf</button>
-        <button class="obtn active" data-organ="habit"  onclick="toggleBtn(this)"><span>🌿</span>Habit</button>
-        <button class="obtn"        data-organ="fruit"  onclick="toggleBtn(this)"><span>🍎</span>Fruit</button>
-        <button class="obtn"        data-organ="bark"   onclick="toggleBtn(this)"><span>🪵</span>Bark</button>
-      </div>
-      <div style="font-size:.72rem;color:var(--text-muted);margin-top:5px">
-        Organ labels come from PlantNet. GBIF/iNat photos are stored as untagged.
+        Fills up to the requested number of photos per species, trying GBIF first, then PlantNet.
       </div>
     </div>
 
     <div class="form-row" id="n-photos-row">
-      <label>Photos per organ (max)</label>
+      <label>Number of photos per species</label>
       <div class="slider-row">
-        <input type="range" id="n-photos" min="1" max="5" value="2"
+        <input type="range" id="n-photos" min="1" max="10" value="4"
           oninput="document.getElementById('n-photos-val').textContent=this.value">
-        <span class="sval" id="n-photos-val">2</span>
+        <span class="sval" id="n-photos-val">4</span>
       </div>
     </div>
 
     <div class="form-row">
-      <label>Max untagged photos <span style="color:var(--text-muted);font-weight:400">(from GBIF/iNat when organ not found)</span></label>
-      <div class="slider-row">
-        <input type="range" id="max-untagged" min="0" max="10" value="3"
-          oninput="document.getElementById('max-untagged-val').textContent=this.value">
-        <span class="sval" id="max-untagged-val">3</span>
-      </div>
-      <div style="font-size:.72rem;color:var(--text-muted);margin-top:3px">
-        Set to 0 to disable untagged photos entirely.
-      </div>
-    </div>
-
-    <div class="form-row">
-      <label>Card language / Langue des cartes</label>
+      <label>Card language</label>
       <select id="lang-select">
         <option value="en">English</option>
-        <option value="fr">Français</option>
-        <option value="de">Deutsch</option>
-        <option value="es">Español</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="es">Spanish</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <div class="toggle-row" style="margin-bottom:.4rem">
+        <label class="toggle-switch">
+          <input type="checkbox" id="tog-extra-lang" onchange="document.getElementById('extra-lang-select').disabled=!this.checked">
+          <div class="toggle-track"></div><div class="toggle-thumb"></div>
+        </label>
+        <div>
+          <span class="toggle-lbl">Add the vernacular name in another language</span>
+          <div style="font-size:.75rem;color:var(--text-muted)">In addition to the CSV name (or the card language), looks up and displays the name in the chosen language.</div>
+        </div>
+      </div>
+      <select id="extra-lang-select" disabled>
+        <option value="en">English</option>
+        <option value="fr">French</option>
+        <option value="de">German</option>
+        <option value="es">Spanish</option>
       </select>
     </div>
 
@@ -126,7 +123,7 @@
       </label>
       <div>
         <span class="toggle-lbl">Include own PlantNet photos</span>
-        <div style="font-size:.75rem;color:var(--text-muted)">Photos from your CSV observations. Uncheck to use only enriched photos (GBIF, iNat, PlantNet related).</div>
+        <div style="font-size:.75rem;color:var(--text-muted)">Photos from your CSV observations. Uncheck to use only enriched photos (GBIF, PlantNet related).</div>
       </div>
     </div>
 
@@ -141,6 +138,17 @@
       <div>
         <span class="toggle-lbl">Embed images in .apkg</span>
         <div style="font-size:.75rem;color:var(--text-muted)">Downloads all photos into the deck — instant loading, works offline. Slower generation, larger file.</div>
+      </div>
+    </div>
+
+    <div class="toggle-row" style="margin-top:.6rem">
+      <label class="toggle-switch">
+        <input type="checkbox" id="tog-review">
+        <div class="toggle-track"></div><div class="toggle-thumb"></div>
+      </label>
+      <div>
+        <span class="toggle-lbl">Review photos before generating the deck</span>
+        <div style="font-size:.75rem;color:var(--text-muted)">Shows a species-by-species gallery to reject bad photos; they are automatically replaced from the same source.</div>
       </div>
     </div>
 
@@ -169,6 +177,30 @@
     <div class="log-area" id="log-area"></div>
   </div>
 
+  <div id="sec-review" class="card hidden">
+    <div class="card-title">Photo review</div>
+    <div class="card-sub" id="review-sub"></div>
+    <div class="review-grid" id="review-grid"></div>
+    <div class="toggle-row" style="margin-top:.3rem">
+      <label class="toggle-switch">
+        <input type="checkbox" id="tog-no-replace">
+        <div class="toggle-track"></div><div class="toggle-thumb"></div>
+      </label>
+      <div>
+        <span class="toggle-lbl">Delete without searching for a replacement</span>
+        <div style="font-size:.75rem;color:var(--text-muted)">Useful if almost all the photos are bad: avoids looping while trying to find a good photo that doesn't exist. Rejected photos are simply removed.</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" id="btn-review-prev" onclick="reviewPrev()">← Previous</button>
+      <button class="btn btn-primary" id="btn-review-next" onclick="reviewNext()">Confirm & next →</button>
+    </div>
+    <div style="font-size:.74rem;color:var(--text-muted);margin-top:.6rem">
+      Click a photo to mark it as bad. Rejected photos are automatically replaced
+      from the same source (PlantNet or GBIF), unless the option above is enabled.
+    </div>
+  </div>
+
   <div id="sec-export" class="card hidden">
     <div class="card-title">Deck ready!</div>
     <div class="card-sub">Data from Tela Botanica and PFAF</div>
@@ -183,8 +215,8 @@
       <button class="btn btn-secondary" onclick="location.reload()">New deck</button>
     </div>
     <div style="font-size:.74rem;color:var(--text-muted);margin-top:.6rem">
-      Double-cliquez sur le .apkg pour importer directement dans Anki
-      (ou File → Import). Le type de note PlantNet is inclus dans le fichier.
+      Double-click the .apkg to import it directly into Anki
+      (or File → Import). The PlantNet note type is included in the file.
     </div>
   </div>
 </div>
@@ -234,6 +266,35 @@ function handleCSVData(d, filename) {
   document.getElementById("sec-options").classList.remove("hidden");
 }
 
+// ── Subtract species already present in a previous CSV export ────────────────
+function onDiffFile(e) {
+  var f = e.target.files[0];
+  if (!f) return;
+  var status = document.getElementById("diff-status");
+  status.textContent = "Analyzing…";
+  var fd = new FormData(); fd.append("csv", f);
+  fetch("/diff_upload", { method: "POST", body: fd })
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.error) { status.textContent = "Error: " + d.error; return; }
+      var matchedSet = {};
+      (d.matched || []).forEach(function(name){ matchedSet[name] = true; });
+      var n = 0;
+      plants.forEach(function(p) {
+        if (matchedSet[p.scientific] && p.selected) { p.selected = false; n++; }
+      });
+      renderPlants();
+      status.textContent = n
+        ? n + " species already present in this CSV were deselected."
+        : "No species in common with this CSV.";
+      e.target.value = "";
+    })
+    .catch(function(err) {
+      status.textContent = "Error: " + err;
+      e.target.value = "";
+    });
+}
+
 // ── Plant list ───────────────────────────────────────────────────────────────
 function renderPlants() {
   var list = document.getElementById("plant-list");
@@ -272,10 +333,9 @@ function updatePhotoSourceHint() {
   var nrow  = document.getElementById("n-photos-row");
   var hints = {
     "none":     "Only your own photos from the PlantNet CSV will be used.",
-    "all":      "PlantNet related images (organ-tagged, 1 API call) + GBIF + iNaturalist for remaining slots (untagged).",
-    "gbif":     "GBIF only — no organ tags, photos stored as untagged.",
-    "inat":     "iNaturalist only — no organ tags, photos stored as untagged.",
-    "plantnet": "PlantNet related images only — organ-tagged, 1 API call. Requires own photo + API key."
+    "all":      "Fills up to the requested number of photos per species, trying GBIF first, then PlantNet.",
+    "gbif":     "GBIF only.",
+    "plantnet": "PlantNet related images only, based on your own photo. Requires own photo + API key."
   };
   hint.textContent = hints[src] || "";
   nrow.style.display = src === "none" ? "none" : "";
@@ -287,20 +347,20 @@ function startGen() {
   if (!selected.length) { alert("Select at least one species."); return; }
 
   var info     = Array.from(document.querySelectorAll(".ibtn.active")).map(function(b){return b.dataset.info;});
-  var organs   = Array.from(document.querySelectorAll(".obtn.active")).map(function(b){return b.dataset.organ;});
   var photoSrc = document.getElementById("photo-source").value;
   var config  = {
     plants:       selected,
     deck_name:    document.getElementById("deck-name").value || "PlantNet – Botany",
     api_key:      document.getElementById("api-key").value.trim(),
     n_photos:     photoSrc === "none" ? 0 : parseInt(document.getElementById("n-photos").value),
-    max_untagged: parseInt(document.getElementById("max-untagged").value),
     photo_source: photoSrc,
-    organs:       organs,
     info:         info,
     lang:         document.getElementById("lang-select").value,
     include_own:  document.getElementById("tog-own").checked,
     embed_images: document.getElementById("tog-embed").checked,
+    review_photos: document.getElementById("tog-review").checked,
+    extra_lang_enabled: document.getElementById("tog-extra-lang").checked,
+    extra_lang:   document.getElementById("extra-lang-select").value,
   };
 
   // Reset progress UI for fresh run
@@ -356,6 +416,10 @@ function pollProgress() {
       document.getElementById("btn-start").disabled = false;
       return;
     }
+    if (d.review_pending) {
+      openReview();
+      return;
+    }
     if (d.done) {
       document.getElementById("gen-sub").textContent = "Done!";
       document.getElementById("btn-stop").style.display = "none";
@@ -375,6 +439,151 @@ function pollProgress() {
       setTimeout(pollProgress, 600);
     }
   }).catch(function(){ setTimeout(pollProgress, 1000); });
+}
+
+// ── Photo review ─────────────────────────────────────────────────────────────
+var reviewAllPlants   = [];   // master list — species objects mutated in place
+var reviewQueue       = [];   // species being reviewed in the CURRENT pass
+var reviewIndex       = 0;
+var reviewOnlyNew     = false; // pass 2+ : show only replaced photos
+var reviewChangedThisPass = false;
+
+function openReview() {
+  document.getElementById("sec-progress").classList.add("hidden");
+  document.getElementById("sec-review").classList.remove("hidden");
+  fetch("/review_data").then(function(r){ return r.json(); }).then(function(d) {
+    reviewAllPlants = d.plants.map(function(p) {
+      p.highlighted = null; // indices of newly-replaced photos, set after a reject
+      return p;
+    });
+    reviewQueue = reviewAllPlants.slice();
+    reviewIndex = 0;
+    reviewOnlyNew = false;
+    reviewChangedThisPass = false;
+    renderReviewSpecies();
+  });
+}
+
+var SOURCE_LABELS = {plantnet: "PlantNet", gbif: "GBIF", own: "Personal"};
+
+function renderReviewSpecies() {
+  var p = reviewQueue[reviewIndex];
+  var pairs = p.slots.map(function(s, i){ return {slot: s, idx: i}; });
+  if (reviewOnlyNew) {
+    pairs = pairs.filter(function(pr){ return p.highlighted && p.highlighted.indexOf(pr.idx) !== -1; });
+  }
+
+  document.getElementById("review-sub").textContent =
+    (reviewIndex + 1) + " / " + reviewQueue.length + " — " + p.scientific +
+    (p.common_name ? " · " + p.common_name : "") +
+    (reviewOnlyNew ? " · new replacement photos" : "");
+
+  var grid = document.getElementById("review-grid");
+  grid.innerHTML = "";
+  pairs.forEach(function(pr) {
+    var s = pr.slot;
+    var wrap = document.createElement("div");
+    wrap.className = "rphoto";
+    wrap.dataset.idx = pr.idx;
+
+    var sameLabel = "Same source" + (SOURCE_LABELS[s.source] ? " (" + SOURCE_LABELS[s.source] + ")" : "");
+    var altSources = ["plantnet", "gbif"].filter(function(src){ return src !== s.source; });
+    var optionsHtml = '<option value="same">' + sameLabel + '</option>' +
+      altSources.map(function(src){ return '<option value="' + src + '">→ ' + SOURCE_LABELS[src] + '</option>'; }).join("");
+
+    wrap.innerHTML =
+      '<img src="' + s.url + '" loading="lazy">' +
+      (reviewOnlyNew ? '<div class="rphoto-new-badge">new</div>' : '') +
+      '<div class="rphoto-tag">' + (s.source || "") + '</div>' +
+      '<div class="rphoto-mark">✕</div>' +
+      '<select class="rphoto-source-select" onclick="event.stopPropagation()" onchange="event.stopPropagation()">' +
+        optionsHtml +
+      '</select>';
+    wrap.onclick = function() { this.classList.toggle("rejected"); };
+    grid.appendChild(wrap);
+  });
+  document.getElementById("btn-review-prev").disabled = (reviewIndex === 0);
+  var isLast = reviewIndex === reviewQueue.length - 1;
+  document.getElementById("btn-review-next").textContent =
+    isLast ? "Finish this pass →" : "Confirm & next →";
+}
+
+function reviewCollectRejected() {
+  return Array.from(document.querySelectorAll(".rphoto.rejected")).map(function(el) {
+    var sel = el.querySelector(".rphoto-source-select");
+    return { idx: parseInt(el.dataset.idx), source: sel ? sel.value : "same" };
+  });
+}
+
+function reviewPrev() {
+  if (reviewIndex > 0) { reviewIndex--; renderReviewSpecies(); }
+}
+
+function reviewNext() {
+  var rejected = reviewCollectRejected();
+
+  var advance = function() {
+    if (reviewIndex < reviewQueue.length - 1) {
+      reviewIndex++;
+      renderReviewSpecies();
+      return;
+    }
+    // End of this pass
+    if (reviewChangedThisPass) {
+      // Build the next pass: only species that got a replacement, and only
+      // show their newly-replaced photos (not the whole gallery again).
+      reviewQueue = reviewAllPlants.filter(function(p){ return p.highlighted && p.highlighted.length; });
+      if (!reviewQueue.length) { finishReview(); return; }
+      reviewOnlyNew = true;
+      reviewIndex = 0;
+      reviewChangedThisPass = false;
+      renderReviewSpecies();
+    } else {
+      finishReview();
+    }
+  };
+
+  if (!rejected.length) { advance(); return; }
+
+  reviewChangedThisPass = true;
+  var p = reviewQueue[reviewIndex];
+  var btn = document.getElementById("btn-review-next");
+  btn.disabled = true;
+  var prevLabel = btn.textContent;
+  btn.textContent = "Searching for a replacement…";
+
+  fetch("/review_reject", {
+    method:  "POST",
+    headers: {"Content-Type": "application/json"},
+    body:    JSON.stringify({
+      plant_index: p.plant_index,
+      rejected:    rejected,
+      replace:     !document.getElementById("tog-no-replace").checked
+    })
+  }).then(function(r){ return r.json(); }).then(function(d) {
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+    if (d.error) { alert("Error: " + d.error); advance(); return; }
+    var notes = (d.plantnet_id_notes || []).concat(d.warnings || []);
+    if (notes.length) alert(notes.join("\n"));
+    p.slots       = d.slots;
+    p.highlighted = d.replaced_indices || [];
+    advance();
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+    alert("Error: " + e);
+    advance();
+  });
+}
+
+function finishReview() {
+  fetch("/review_finish", { method: "POST" }).then(function() {
+    document.getElementById("sec-review").classList.add("hidden");
+    document.getElementById("sec-progress").classList.remove("hidden");
+    document.getElementById("gen-sub").textContent = "Building deck…";
+    pollProgress();
+  });
 }
 
 function setupNoteType() {
