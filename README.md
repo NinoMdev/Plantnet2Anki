@@ -44,8 +44,9 @@ You should review your deck after generation and adjust names if they are not co
 ## Web version 
 
 No need to download anything : just [Try online Plantnet2Anki](https://plantnet2anki.onrender.com)
+Follow the *Generate a deck from Anki* guide below.
 
-## App version
+## App version : setup
 
 If the web page is down, or if you want to use the local app version, you can download and launch the app on your computer :
 
@@ -101,7 +102,7 @@ You will also need a **PlantNet developer account** to obtain an API key, which 
 > [!NOTE]
 > The free PlantNet API is limited to **500 requests per day**. This means you can process up to 500 species per day with PlantNet2Anki. If you have more observations, split your `.csv` into batches, generate one deck per batch on separate days, and merge them directly in Anki.
 
-### Generate a deck with PlantNet2Anki
+## Generate a deck with PlantNet2Anki
 
 Done with the setup? You are now ready to generate your deck.
 
