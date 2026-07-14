@@ -51,7 +51,7 @@ HOST   = "0.0.0.0" if IS_WEB else "127.0.0.1"
 
 # ── Botanical constants ───────────────────────────────────────────────────────
 PLANTNET_API = "https://my-api.plantnet.org/v2/identify/all"
-HEADERS      = {"User-Agent": "plantnet2anki-gui/1.0"}
+HEADERS      = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
 
 # ── Per-session state ─────────────────────────────────────────────────────────
 # Each browser gets its own session (via a cookie), so a shared deployment can
