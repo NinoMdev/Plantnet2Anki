@@ -78,7 +78,7 @@ def _new_session_state():
         "done":      False,
         "stopped":   False,
         "gen_id":    0,
-        "deck_pkg":  None,     # final Anki .txt content
+        "deck_pkg_path": None,  # chemin du .apkg généré (fichier temporaire sur disque)
         "deck_name": "PlantNet – Botany",
     }
 
@@ -101,7 +101,13 @@ def _purge_stale_sessions():
         with SESSIONS_LOCK:
             stale = [sid for sid, s in SESSIONS.items() if s["last_seen"] < cutoff]
             for sid in stale:
+                pkg_path = SESSIONS[sid]["state"].get("deck_pkg_path")
                 del SESSIONS[sid]
+                if pkg_path:
+                    try:
+                        os.remove(pkg_path)
+                    except OSError:
+                        pass
 
 
 class _StateProxy:
@@ -822,8 +828,13 @@ def build_anki_pkg(plants, deck_name, media_files=None, lang="en"):
     Build .apkg from enriched plant data.
     media_files: list of local file paths to embed (for offline mode).
                  The corresponding slots already use local filenames.
+
+    Retourne le CHEMIN du fichier .apkg écrit sur disque (et non ses bytes) :
+    pour de gros lots de photos, garder le paquet entier en RAM peut dépasser
+    la mémoire disponible sur des instances contraintes (ex. Render Free/Starter
+    à 512 MB) et provoquer un OOM kill. On sollicite donc le disque plutôt que la RAM.
     """
-    import io
+    import tempfile
 
     question = "Quelle est cette plante ?" if lang == "fr" else "What plant is this?"
     front    = FRONT_TEMPLATE.replace("What plant is this?", question)
@@ -850,9 +861,11 @@ def build_anki_pkg(plants, deck_name, media_files=None, lang="en"):
 
     pkg = genanki.Package(deck)
     pkg.media_files = media_files or []
-    buf = io.BytesIO()
-    pkg.write_to_file(buf)
-    return buf.getvalue()
+
+    tmp_pkg = tempfile.NamedTemporaryFile(suffix=".apkg", delete=False)
+    tmp_pkg.close()
+    pkg.write_to_file(tmp_pkg.name)
+    return tmp_pkg.name
 
 # ── Generation worker ─────────────────────────────────────────────────────────
 def run_generation(config, session, my_gen_id=None):
@@ -868,7 +881,13 @@ def run_generation(config, session, my_gen_id=None):
         state["stopped"]  = False
         state["log"]      = []
         state["progress"] = 0
-        state["deck_pkg"] = None
+        old_pkg_path = state.get("deck_pkg_path")
+        state["deck_pkg_path"] = None
+    if old_pkg_path:
+        try:
+            os.remove(old_pkg_path)
+        except OSError:
+            pass
 
     # Build the list of selected species from the config sent by the browser.
     # This ensures a fresh start even after Stop, with the current selection.
@@ -900,6 +919,8 @@ def run_generation(config, session, my_gen_id=None):
         p.pop("_reserve",     None)
 
     log(f"Starting — {len(plants)} species | {n_photos} photo(s)/species | own photos: {include_own} | source: {photo_source}")
+
+    pct = 0  # valeur de repli si le thread est arrêté/invalidé avant toute itération
 
     for i, plant in enumerate(plants):
         if should_stop():
@@ -1040,14 +1061,26 @@ def run_generation(config, session, my_gen_id=None):
 
     set_progress(98)
     log("Building .apkg…")
-    pkg_bytes = build_anki_pkg(plants, deck_name, media_files=media_files, lang=lang)
+    pkg_path = build_anki_pkg(plants, deck_name, media_files=media_files, lang=lang)
 
     total_cards  = len(plants)  # 1 card per species (JS random photo)
     total_photos = sum(sum(len(v) for v in p.get("images",{}).values()) for p in plants)
 
     stopped = should_stop()
+    if stopped:
+        # Génération invalidée après coup : le fichier généré ne sera jamais servi.
+        try:
+            os.remove(pkg_path)
+        except OSError:
+            pass
     with state_lock:
-        state["deck_pkg"]  = pkg_bytes if not stopped else None
+        old_pkg_path = state.get("deck_pkg_path")
+        if old_pkg_path and old_pkg_path != pkg_path:
+            try:
+                os.remove(old_pkg_path)
+            except OSError:
+                pass
+        state["deck_pkg_path"] = pkg_path if not stopped else None
         state["deck_name"] = deck_name
         state["running"]   = False
         state["done"]      = not stopped
@@ -1192,18 +1225,26 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/download":
             with state_lock:
-                pkg = state.get("deck_pkg")
+                pkg_path = state.get("deck_pkg_path")
                 name = state.get("deck_name", "PlantNet_Botany")
-            if not pkg:
+            if not pkg_path or not os.path.exists(pkg_path):
                 self.send_json({"error": "No deck generated yet"}, 404)
                 return
             safe_name = re.sub(r"[^\w\-]", "_", name) + ".apkg"
+            file_size = os.path.getsize(pkg_path)
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
-            self.send_header("Content-Length", len(pkg))
+            self.send_header("Content-Length", str(file_size))
             self.end_headers()
-            self.wfile.write(pkg)
+            # Streaming par blocs de 1 Mo depuis le disque : évite de charger
+            # tout le fichier (potentiellement ~1 Go) en RAM d'un seul coup.
+            with open(pkg_path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
 
         else:
             self.send_response(404)
