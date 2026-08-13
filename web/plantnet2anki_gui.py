@@ -2,128 +2,75 @@
 """
 plantnet2anki_gui.py
 ====================
-PlantNet → Anki — usable either as a local web interface or deployed as a
-shared web app (e.g. on Render). Each browser/session gets its own isolated
-state via a cookie, so multiple people can use a deployed instance at once
-without interfering with each other.
+PlantNet → Anki with a local web interface.
 
-Run locally:
+Run:
     python plantnet2anki_gui.py
+
 Then open http://localhost:7842 in your browser (opened automatically).
 
-Deployed (e.g. Render): the platform sets a PORT environment variable: the
-server binds to 0.0.0.0 on that port and skips opening a local browser.
-
 Requirements:
-    pip install requests genanki
+    pip install requests beautifulsoup4
 """
 
 import csv
 import io
 import json
 import os
-import random
 import re
 import sys
 import threading
 import time
-import unicodedata
-import uuid
 import webbrowser
-from http.cookies import SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 try:
     import requests
+    from bs4 import BeautifulSoup
     import genanki
 except ImportError as _missing:
     print(f"Missing dependency: {_missing}")
     print("Please run:")
-    print("  pip install requests genanki")
+    print("  pip install requests beautifulsoup4 genanki")
     sys.exit(1)
 
-IS_WEB = os.environ.get("PORT") is not None
-PORT   = int(os.environ.get("PORT", 7842))
-HOST   = "0.0.0.0" if IS_WEB else "127.0.0.1"
+PORT = 7842
 
 # ── Botanical constants ───────────────────────────────────────────────────────
+TELA_BASE    = "https://api.tela-botanica.org/service:eflore:0.1"
+PFAF_BASE    = "https://pfaf.org/user/plant.aspx"
 PLANTNET_API = "https://my-api.plantnet.org/v2/identify/all"
-HEADERS      = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+HEADERS      = {"User-Agent": "plantnet2anki-gui/1.0"}
 
-# ── Per-session state ─────────────────────────────────────────────────────────
-# Each browser gets its own session (via a cookie), so a shared deployment can
-# serve multiple people at once without their generations interfering with
-# each other. `state` and `state_lock` below are proxies: existing code that
-# does `state["x"]` or `with state_lock:` keeps working exactly as before,
-# but now transparently resolves to whichever session is active on the
-# CURRENT THREAD — set once per incoming HTTP request (see Handler), and
-# explicitly propagated into the background generation thread (see
-# run_generation / the /generate handler).
-SESSIONS       = {}
-SESSIONS_LOCK  = threading.Lock()
-SESSION_MAX_AGE = 3 * 60 * 60  # purge sessions idle for more than 3 hours
-_local = threading.local()
+MONTHS_EN = ["January","February","March","April","May","June",
+             "July","August","September","October","November","December"]
+BIO_TYPE_MAP = {
+    "Ph":"Phanerophyte (tree/shrub)", "Ch":"Chamaephyte (dwarf shrub)",
+    "H":"Hemicryptophyte (perennial herb)", "G":"Geophyte (bulb/rhizome)",
+    "Th":"Therophyte (annual)", "HH":"Helophyte (marsh plant)",
+}
+ORGAN_LABELS = {
+    "en": {"flower":"Flower", "leaf":"Leaf",    "habit":"Habit",          "fruit":"Fruit", "bark":"Bark"},
+    "fr": {"flower":"Fleur",  "leaf":"Feuille",  "habit":"Plante entière", "fruit":"Fruit", "bark":"Écorce"},
+}
 
-
-def _new_session_state():
-    return {
-        "plants":    [],       # list of dicts after CSV parsing
-        "log":       [],       # list of log lines sent to frontend via SSE
-        "progress":  0,
-        "progress_label": "",        # 0-100
-        "running":   False,
-        "done":      False,
-        "stopped":   False,
-        "gen_id":    0,
-        "deck_pkg":  None,     # final Anki .txt content
-        "deck_name": "PlantNet – Botany",
-    }
-
-
-def _new_session():
-    return {
-        "state":        _new_session_state(),
-        "lock":         threading.Lock(),
-        "review_event": threading.Event(),
-        "log_cursor":   0,
-        "last_seen":    time.time(),
-        "last_generate": 0,
-    }
-
-
-def _purge_stale_sessions():
-    while True:
-        time.sleep(600)
-        cutoff = time.time() - SESSION_MAX_AGE
-        with SESSIONS_LOCK:
-            stale = [sid for sid, s in SESSIONS.items() if s["last_seen"] < cutoff]
-            for sid in stale:
-                del SESSIONS[sid]
-
-
-class _StateProxy:
-    """Delegates state["key"] access to the current thread's active session."""
-    def __getitem__(self, k): return _local.session["state"][k]
-    def __setitem__(self, k, v): _local.session["state"][k] = v
-    def __contains__(self, k): return k in _local.session["state"]
-    def get(self, k, default=None): return _local.session["state"].get(k, default)
-    def pop(self, k, default=None): return _local.session["state"].pop(k, default)
-
-
-class _LockProxy:
-    """Delegates `with state_lock:` to the current thread's active session lock."""
-    def __enter__(self):
-        self._lock = _local.session["lock"]
-        self._lock.acquire()
-    def __exit__(self, exc_type, exc, tb):
-        self._lock.release()
-
-
-state      = _StateProxy()
-state_lock = _LockProxy()
+# ── Global state ──────────────────────────────────────────────────────────────
+state = {
+    "plants":    [],       # list of dicts after CSV parsing
+    "log":       [],       # list of log lines sent to frontend via SSE
+    "progress":  0,
+    "progress_label": "",        # 0-100
+    "running":   False,
+    "done":      False,
+    "stopped":   False,
+    "gen_id":    0,
+    "deck_pkg":  None,     # final Anki .txt content
+    "deck_name": "PlantNet – Botany",
+}
+state_lock = threading.Lock()
 
 
 def log(msg, level="info"):
@@ -161,26 +108,6 @@ def find_col(headers, *candidates):
     return None
 
 
-def extract_csv_from_multipart(body, content_type):
-    """Extract the raw CSV text out of a multipart/form-data POST body.
-    Returns the decoded text, or None if no file part could be found."""
-    boundary = None
-    for part in content_type.split(";"):
-        part = part.strip()
-        if part.startswith("boundary="):
-            boundary = part[9:].strip()
-            break
-    if not boundary:
-        return None
-    boundary_bytes = ("--" + boundary).encode()
-    for part in body.split(boundary_bytes):
-        if b"filename=" in part and b"\r\n\r\n" in part:
-            _, content = part.split(b"\r\n\r\n", 1)
-            content = content.rstrip(b"\r\n--")
-            return content.decode("utf-8", errors="replace")
-    return None
-
-
 def group_by_species(rows):
     if not rows:
         return []
@@ -189,8 +116,6 @@ def group_by_species(rows):
     col_family = find_col(headers, "family", "famille")
     col_images = find_col(headers, "images", "image")
     col_date   = find_col(headers, "date observed", "date")
-    col_common = find_col(headers, "current common name", "common name", "nom vernaculaire")
-    col_note   = find_col(headers, "personal note", "note personnelle")
 
     by = {}
     for row in rows:
@@ -199,8 +124,7 @@ def group_by_species(rows):
         if sci not in by:
             by[sci] = {"scientific": sci,
                        "family":     row.get(col_family, "") if col_family else "",
-                       "own_images": [], "observations": 0, "last_date": "",
-                       "csv_common_name": "", "personal_notes": []}
+                       "own_images": [], "observations": 0, "last_date": ""}
         by[sci]["observations"] += 1
         if col_date:
             by[sci]["last_date"] = row.get(col_date, "") or by[sci]["last_date"]
@@ -209,18 +133,10 @@ def group_by_species(rows):
                 u = u.strip()
                 if u.startswith("http"):
                     by[sci]["own_images"].append(u)
-        if col_common and not by[sci]["csv_common_name"]:
-            val = (row.get(col_common) or "").strip()
-            if val:
-                by[sci]["csv_common_name"] = val
-        if col_note:
-            val = (row.get(col_note) or "").strip()
-            if val and val not in by[sci]["personal_notes"]:
-                by[sci]["personal_notes"].append(val)
     return list(by.values())
 
 
-# ── Name utilities ────────────────────────────────────────────────────────────
+# ── Tela Botanica ─────────────────────────────────────────────────────────────
 def clean_scientific_name(name):
     """
     Strip author citation from scientific name.
@@ -243,233 +159,222 @@ def clean_scientific_name(name):
     # Otherwise keep only genus + species epithet
     return " ".join(tokens[:2])
 
-def _norm_name(s):
-    """Normalize a name for comparison: lowercase, no accents, no extra spaces."""
-    s = unicodedata.normalize("NFKD", s.strip().lower())
-    return "".join(c for c in s if not unicodedata.combining(c))
+
+def bdtfx_search(name, mode="exacte"):
+    """Query BDTFX and return first matching taxon dict or None."""
+    url = (f"{TELA_BASE}/bdtfx/taxons"
+           f"?recherche={mode}&masque.ns={requests.utils.quote(name)}"
+           f"&retour.champs=num_nom,nom_sci,nom_vernaculaire,famille"
+           f"&navigation.limite=1&retour.format=json")
+    r = requests.get(url, headers=HEADERS, timeout=10)
+    if r.status_code != 200:
+        return None, f"HTTP {r.status_code}"
+    data    = r.json()
+    entries = [v for v in data.values() if isinstance(v, dict) and v.get("num_nom")]
+    return (entries[0] if entries else None), "ok"
 
 
-def _cn_plantnet(sci, api_key, lang="en"):
-    """Common name via PlantNet species search (genus prefix — no image needed)."""
-    if not api_key:
-        return ""
-    cleaned = clean_scientific_name(sci).lower()
-    genus = sci.split()[0]
+def fetch_tela(sci, options):
+    result = {}
     try:
-        url = (f"https://my-api.plantnet.org/v2/projects/k-world-flora/species"
-               f"?prefix={requests.utils.quote(genus)}&lang={lang}&api-key={api_key}")
-        r = requests.get(url, headers=HEADERS, timeout=8)
-        if not r.ok:
+        cleaned = clean_scientific_name(sci)
+        log_extra = f" (cleaned: '{cleaned}')" if cleaned != sci else ""
+
+        # 1. Try exact match on cleaned name
+        taxon, st = bdtfx_search(cleaned, "exacte")
+
+        # 2. Fallback: fuzzy search on cleaned name
+        if taxon is None:
+            taxon, st = bdtfx_search(cleaned, "floue")
+
+        # 3. Fallback: fuzzy search on genus only
+        if taxon is None:
+            genus = cleaned.split()[0]
+            taxon, st = bdtfx_search(genus, "floue")
+            if taxon:
+                log(f"    BDTFX: genus-only match ({genus}) → {taxon.get('nom_sci','?')}", "warn")
+
+        if taxon is None:
+            return result, f"not in BDTFX{log_extra}"
+
+        num_nom = taxon["num_nom"]
+        num_nom = taxon["num_nom"]
+        # Always fetch vernacular name — used on the card regardless of options
+        if taxon.get("nom_vernaculaire"):
+            result["common_name"] = taxon["nom_vernaculaire"]
+        if taxon.get("famille"):
+            result["tb_family"] = taxon["famille"]
+
+        r2 = requests.get(f"{TELA_BASE}/baseflor/taxons/{num_nom}?retour.format=json",
+                          headers=HEADERS, timeout=10)
+        if r2.status_code != 200:
+            return result, f"BDTFX OK, Baseflor HTTP {r2.status_code}"
+        bf = r2.json()
+        if not isinstance(bf, dict):
+            return result, "Baseflor: unexpected format"
+        if "flowering" in options:
+            d  = bf.get("mois_debut_floraison") or bf.get("mois-debut-floraison")
+            f_ = bf.get("mois_fin_floraison")   or bf.get("mois-fin-floraison")
+            if d and f_:
+                try: result["flowering"] = f"{MONTHS_EN[int(d)-1]} – {MONTHS_EN[int(f_)-1]}"
+                except: result["flowering"] = f"{d} – {f_}"
+        if "perennial" in options:
+            tb = bf.get("type_biologique") or bf.get("type-biologique", "")
+            if tb:
+                code = re.split(r"[,\s/]", tb)[0]
+                result["perennial"] = BIO_TYPE_MAP.get(code, tb)
+        if "habitat" in options:
+            h = bf.get("syntaxon") or bf.get("habitat") or bf.get("milieu", "")
+            if h: result["habitat"] = h[:200]
+        if "description" in options:
+            desc = bf.get("commentaire") or bf.get("description", "")
+            if desc: result["description"] = desc[:300]
+
+        found = [k for k in result if k != "tb_family"]
+        return result, ("OK: " + ", ".join(found)) if found else f"OK (num_nom={num_nom}) — no Baseflor data"
+    except Exception as e:
+        return result, f"error: {e}"
+
+
+# ── PFAF ──────────────────────────────────────────────────────────────────────
+def fetch_pfaf(sci, options):
+    result = {}
+    if not ({"edible","medicinal","toxicity"} & set(options)):
+        return result, "skipped"
+    try:
+        r = requests.get(f"{PFAF_BASE}?LatinName={sci.replace(' ','+')}", headers=HEADERS, timeout=12)
+        if r.status_code != 200:
+            return result, f"HTTP {r.status_code}"
+        if "Plant not found" in r.text or len(r.text) < 500:
+            return result, "not in PFAF"
+        soup = BeautifulSoup(r.text, "html.parser")
+        def extract(label):
+            for tag in soup.find_all(["h2","h3","td","th"]):
+                if label.lower() in tag.get_text().lower():
+                    nxt = tag.find_next_sibling()
+                    if nxt: return nxt.get_text(" ", strip=True)[:300]
+                    parent = tag.find_parent("tr")
+                    if parent:
+                        cells = parent.find_all("td")
+                        if len(cells) > 1: return cells[-1].get_text(" ", strip=True)[:300]
             return ""
-        data = r.json() if isinstance(r.json(), list) else []
-        for sp in data:
-            if sp.get("scientificNameWithoutAuthor", "").lower() == cleaned:
-                names = sp.get("commonNames", [])
-                if names:
-                    return names[0]
-        for sp in data:
-            sp_name = sp.get("scientificNameWithoutAuthor", "").lower()
-            if cleaned in sp_name or sp_name in cleaned:
-                names = sp.get("commonNames", [])
-                if names:
-                    return names[0]
-    except Exception:
-        pass
-    return ""
+        if "edible"    in options:
+            v = extract("Edible Uses");    result["edible"]    = v if len(v)>10 else ""
+        if "medicinal" in options:
+            v = extract("Medicinal Uses"); result["medicinal"] = v if len(v)>10 else ""
+        if "toxicity"  in options:
+            v = extract("Known Hazards"); result["toxicity"]  = v if len(v)>5  else ""
+        result = {k: v for k, v in result.items() if v}
+        found = list(result.keys())
+        return result, ("OK: " + ", ".join(found)) if found else "page found but no data extracted"
+    except Exception as e:
+        return result, f"error: {e}"
 
-
-def _cn_gbif(sci, lang="en"):
-    """Common name via GBIF vernacular names. Tries requested language only —
-    PlantNet/iNaturalist cover the fallback languages in the cascade."""
+def fetch_common_name(sci, api_key, lang="en"):
+    """
+    Fetch common name from GBIF only.
+    Tries requested language first, falls back to English.
+    """
+    # Map lang codes to GBIF language codes
     lang_map = {
-        "en": ("eng", "en"), "fr": ("fra", "fre", "fr"),
-        "de": ("deu", "ger", "de"), "es": ("spa", "es"),
+        "en": ("eng", "en"),
+        "fr": ("fra", "fre", "fr"),
+        "de": ("deu", "ger", "de"),
+        "es": ("spa", "es"),
     }
     pref_codes = lang_map.get(lang, ("eng", "en"))
+    en_codes   = lang_map["en"]
+
     try:
         r = requests.get(f"{GBIF_API}/species/match",
                          params={"name": sci, "verbose": "false"},
                          headers=HEADERS, timeout=8)
         if not r.ok:
-            return ""
+            return "", "GBIF match failed"
         key = r.json().get("usageKey") or r.json().get("speciesKey")
         if not key:
-            return ""
+            return "", "not found in GBIF"
+
         r2 = requests.get(f"{GBIF_API}/species/{key}/vernacularNames",
                           params={"limit": 100}, headers=HEADERS, timeout=8)
         if not r2.ok:
-            return ""
+            return "", f"GBIF vernacular HTTP {r2.status_code}"
+
         names = r2.json().get("results", [])
+
+        # Pass 1: preferred language
         for n in names:
             if n.get("language", "").lower() in pref_codes:
-                return n.get("vernacularName", "")
-    except Exception:
-        pass
-    return ""
+                return n.get("vernacularName", ""), f"GBIF ({lang})"
 
+        # Pass 2: English fallback
+        if lang != "en":
+            for n in names:
+                if n.get("language", "").lower() in en_codes:
+                    return n.get("vernacularName", ""), "GBIF (en fallback)"
 
-def _cn_inat(sci, lang="en"):
-    """Common name via iNaturalist taxa search."""
-    try:
-        r = requests.get(f"{INAT_API}/taxa",
-                         params={"q": sci, "per_page": 5}, headers=HEADERS, timeout=8)
-        if not r.ok:
-            return ""
-        results = r.json().get("results", [])
-        if not results:
-            return ""
-        cleaned = clean_scientific_name(sci).lower()
-        target = next((res for res in results if res.get("name", "").lower() == cleaned), results[0])
-        if lang == "fr":
-            for tn in target.get("taxon_names", []):
-                if tn.get("locale") == "fr" and tn.get("name"):
-                    return tn["name"]
-        return target.get("preferred_common_name", "") or ""
-    except Exception:
-        return ""
+        return "", "no vernacular name in GBIF"
 
-
-def fetch_common_names_all(sci, api_key, lang="en"):
-    """
-    Query PlantNet, GBIF and iNaturalist for a common name — always all three,
-    never stopping early.
-    - If every source that found something agrees (accent/case-insensitive),
-      a single name is returned.
-    - If they disagree, all distinct names are returned, each annotated with
-      the source(s) that produced it, e.g.
-      "Lavande officinale (PlantNet/GBIF) ; Lavande vraie (iNaturalist)".
-    Returns (display_string, status).
-    """
-    found = []
-    pn = _cn_plantnet(sci, api_key, lang=lang)
-    if pn:
-        found.append((pn, "PlantNet"))
-    gb = _cn_gbif(sci, lang=lang)
-    if gb:
-        found.append((gb, "GBIF"))
-    it = _cn_inat(sci, lang=lang)
-    if it:
-        found.append((it, "iNaturalist"))
-
-    if not found:
-        return "", "not found"
-
-    groups, order = {}, []
-    for name, src in found:
-        key = _norm_name(name)
-        if key not in groups:
-            groups[key] = {"name": name, "sources": []}
-            order.append(key)
-        groups[key]["sources"].append(src)
-
-    if len(order) == 1:
-        g = groups[order[0]]
-        return g["name"], "+".join(g["sources"])
-
-    parts = [f'{groups[k]["name"]} ({"/".join(groups[k]["sources"])})' for k in order]
-    return " ; ".join(parts), "multiple sources disagree"
+    except Exception as e:
+        return "", f"GBIF error: {e}"
 # ── PlantNet photos ───────────────────────────────────────────────────────────
 # ── Photo sources ────────────────────────────────────────────────────────────
 #
 # Storage model:
 #   plant["images"] = {
-#       "own":      [{"url": "...", "source": "own"}, ...],
-#       "untagged": [{"url": "...", "source": "gbif"|"plantnet"}, ...],
+#       "flower": ["url1", "url2"],   # organ-tagged (from PlantNet)
+#       "leaf":   ["url3"],
+#       "untagged": ["url4", "url5"], # from GBIF/iNat — no organ info
 #   }
 #
-# Fetch order for "untagged": GBIF → PlantNet, stopping once the requested
-# photo count is reached. (iNaturalist was removed as a photo source; it's
-# still used for vernacular names, see fetch_common_names_all.)
-# PlantNet related images: 1 API call per reference photo submitted. During
-# review, a rejected photo can itself become the new reference photo for a
-# fresh PlantNet lookup — works with any photo of the plant, not just the
-# CSV's own photo.
-# GBIF: free, independent random draws.
+# PlantNet related images: 1 API call per plant → already organ-tagged.
+# GBIF / iNaturalist: free, no organ tags → stored under "untagged".
 
 GBIF_API = "https://api.gbif.org/v1"
 INAT_API = "https://api.inaturalist.org/v1"
 
 
-def collect_plantnet_related(image_url, api_key, target_sci, n, exclude=None):
+def collect_plantnet_by_organ(plant, api_key, organs, n_per_organ):
     """
-    Submit ONE reference photo — any photo of the plant, whether it's the
-    CSV's own photo, a GBIF photo, or even a photo PlantNet returned earlier
-    — to PlantNet with include-related-images=true, and return up to n
-    visually-similar photo URLs FOR THE TARGET SPECIES specifically.
-
-    PlantNet returns several candidate species per identification, each with
-    its own set of related images. Rather than trusting the top guess blindly
-    (which can be wrong, especially from a low-quality reference photo), this
-    scans every candidate for one whose name matches target_sci, and only
-    uses that candidate's images.
-
-    Returns (urls, reserve, status, identified, matched):
-      urls       -> up to n URLs to use right away
-      reserve    -> any extra URLs beyond n, kept for photo-review replacements
-      identified -> {"name": ..., "score": 0-100} for whichever candidate was
-                     used (the matching one), or None if nothing usable
-      matched    -> True if target_sci was found among PlantNet's candidates;
-                     False means the caller should fall back to another
-                     source instead of trusting unrelated images
+    Submit own image to PlantNet with include-related-images=true.
+    Returns {organ: [url, ...]} — already organ-tagged, 1 API call only.
     """
-    exclude = exclude or set()
-    if not image_url or not api_key:
-        return [], [], "skipped (need a reference photo + API key)", None, False
+    result = {o: [] for o in organs}
+    if not plant.get("own_images") or not api_key:
+        return result, "skipped (need own image + API key)"
     try:
-        img_r = requests.get(image_url, timeout=15)
+        img_r = requests.get(plant["own_images"][0], timeout=15)
         if not img_r.ok:
-            return [], [], f"could not fetch reference photo HTTP {img_r.status_code}", None, False
+            return result, f"could not fetch own image HTTP {img_r.status_code}"
         r = requests.post(
             PLANTNET_API,
             files=[("images", ("plant.jpg", img_r.content, "image/jpeg"))],
             data={"organs": ["auto"]},
             params={"include-related-images": "true", "no-reject": "true",
-                    "nb-results": 10, "lang": "en", "api-key": api_key},
+                    "lang": "en", "api-key": api_key},
             headers=HEADERS, timeout=20
         )
         if not r.ok:
-            return [], [], f"API HTTP {r.status_code}: {r.text[:60]}", None, False
-        results_list = r.json().get("results", [])
-        target_norm = clean_scientific_name(target_sci).lower()
-        match = None
-        for res in results_list:
-            name = res.get("species", {}).get("scientificNameWithoutAuthor", "")
-            if clean_scientific_name(name).lower() == target_norm:
-                match = res
-                break
-        if not match:
-            top_names = ", ".join(
-                res.get("species", {}).get("scientificNameWithoutAuthor", "?")
-                for res in results_list[:3]
-            ) or "nothing"
-            return [], [], f"target species not among PlantNet's candidates (got: {top_names})", None, False
-
-        identified = {"name": match.get("species", {}).get("scientificNameWithoutAuthor", ""),
-                      "score": round(match.get("score", 0) * 100)}
-        related = match.get("images", [])
-        random.shuffle(related)  # avoid always keeping the API's own default order
-        all_urls = []
+            return result, f"API HTTP {r.status_code}: {r.text[:60]}"
+        related = r.json().get("results", [{}])[0].get("images", [])
+        log(f"    PlantNet: {len(related)} related image(s) returned")
         for img in related:
+            organ = img.get("organ")
+            if organ not in organs:
+                continue
+            if len(result[organ]) >= n_per_organ:
+                continue
             u = (img.get("url") or {}).get("m") or (img.get("url") or {}).get("s", "")
-            if u and u not in all_urls and u not in exclude:
-                all_urls.append(u)
-        urls, reserve = all_urls[:n], all_urls[n:]
-        status = f"OK — matched {identified['name']} ({identified['score']}%), {len(urls)} used, {len(reserve)} in reserve"
-        return urls, reserve, status, identified, True
+            if u:
+                result[organ].append(u)
+        filled   = {o: len(v) for o, v in result.items() if v}
+        return result, f"OK — {filled}"
     except Exception as e:
-        return [], [], f"error: {e}", None, False
+        return result, f"error: {e}"
 
 
-def collect_gbif_urls(sci, n, seen=None):
-    """
-    Fetch up to n photo URLs from GBIF occurrences , each drawn
-    from an INDEPENDENT random position across the full set of image-bearing
-    occurrences — not a single random window (which would still clump
-    results from the same import batch/collector together).
-    `seen` is a set of URLs to skip (already used elsewhere).
-    Returns (urls, status).
-    """
-    seen = seen or set()
+def collect_gbif_urls(sci, n):
+    """Fetch up to n photo URLs from GBIF occurrences (no organ tag)."""
     try:
         r = requests.get(f"{GBIF_API}/species/match",
                          params={"name": sci, "verbose": "false"},
@@ -479,231 +384,119 @@ def collect_gbif_urls(sci, n, seen=None):
         key = r.json().get("usageKey") or r.json().get("speciesKey")
         if not key:
             return [], "not found in GBIF"
-
-        rc = requests.get(f"{GBIF_API}/occurrence/search",
-                          params={"taxonKey": key, "mediaType": "StillImage", "limit": 0},
-                          headers=HEADERS, timeout=8)
-        total = rc.json().get("count", 0) if rc.ok else 0
-        if total == 0:
-            return [], "no images in GBIF"
-
-        picked, tried = [], set()
-        max_attempts = min(total, n * 5 + 10)
-        attempts = 0
-        while len(picked) < n and attempts < max_attempts and len(tried) < total:
-            offset = random.randint(0, total - 1)
-            if offset in tried:
-                continue
-            tried.add(offset)
-            attempts += 1
-            r2 = requests.get(f"{GBIF_API}/occurrence/search",
-                              params={"taxonKey": key, "mediaType": "StillImage",
-                                      "limit": 1, "offset": offset},
-                              headers=HEADERS, timeout=8)
-            if not r2.ok:
-                continue
-            results = r2.json().get("results", [])
-            if not results:
-                continue
-            for m in results[0].get("media", []):
+        r2 = requests.get(f"{GBIF_API}/occurrence/search",
+                          params={"taxonKey": key, "mediaType": "StillImage", "limit": n * 2},
+                          headers=HEADERS, timeout=10)
+        if not r2.ok:
+            return [], f"occurrences HTTP {r2.status_code}"
+        urls = []
+        for occ in r2.json().get("results", []):
+            for m in occ.get("media", []):
                 u = m.get("identifier", "")
-                if u and u.startswith("http") and u not in seen and u not in picked:
-                    picked.append(u)
-                    break
-        return picked, f"{len(picked)}/{total} (random draws, {attempts} tries)"
+                if u and u.startswith("http") and u not in urls:
+                    urls.append(u)
+        return urls[:n], f"{len(urls)} found"
     except Exception as e:
         return [], f"error: {e}"
 
 
-def fetch_photos_for_plant(plant, sci, n_photos, api_key, source):
+def collect_inat_urls(sci, n):
+    """Fetch up to n research-grade photo URLs from iNaturalist (no organ tag)."""
+    try:
+        r = requests.get(f"{INAT_API}/observations",
+                         params={"taxon_name": sci, "quality_grade": "research",
+                                 "photos": "true", "per_page": n * 2,
+                                 "order_by": "votes", "order": "desc"},
+                         headers=HEADERS, timeout=12)
+        if not r.ok:
+            return [], f"HTTP {r.status_code}"
+        urls = []
+        for obs in r.json().get("results", []):
+            for photo in obs.get("photos", []):
+                u = photo.get("url", "").replace("square", "medium")
+                if u and u not in urls:
+                    urls.append(u)
+        return urls[:n], f"{len(urls)} found"
+    except Exception as e:
+        return [], f"error: {e}"
+
+
+def fetch_photos_for_plant(plant, sci, organs, n_per_organ, api_key, source, max_untagged=None):
     """
-    Main photo fetching function. Fills plant["images"]["untagged"] with up
-    to n_photos photos (each {"url":..., "source":...}), pulling from the
-    sources in this order: GBIF → PlantNet, stopping as soon as n_photos is
-    reached. (iNaturalist was removed as a photo source — no usable photos
-    were being found there; it's still used for vernacular names.)
+    Main photo fetching function.
+    Returns plant["images"] dict:
+      - organ-tagged photos from PlantNet (if api_key provided)
+      - untagged pool from GBIF/iNat for remaining slots
 
-    Also populates plant["_fetch_state"] (seen-urls tracking) and
-    plant["_reserve"] (PlantNet overflow) so the photo-review step can fetch
-    a same-source replacement for any photo the user rejects.
-
-    source: "all" | "plantnet" | "gbif" | "none"
+    source: "all" | "plantnet" | "gbif" | "inat" | "none"
     """
-    images = {"untagged": []}
+    images     = {o: [] for o in organs}
+    images["untagged"] = []
+    seen       = set()
 
-    fetch_state = plant["_fetch_state"]
-    reserve     = plant["_reserve"]
-    seen        = set(fetch_state["seen_urls"])
-
-    if source == "none" or n_photos == 0:
+    if source == "none" or n_per_organ == 0:
         return images, "disabled"
 
-    use_gbif = source in ("all", "gbif")
-    use_pn   = source in ("all", "plantnet") and api_key and plant.get("own_images")
-    summary  = []
-    budget   = n_photos
+    use_pn    = source in ("all", "plantnet") and api_key and plant.get("own_images")
+    use_gbif  = source in ("all", "gbif")
+    use_inat  = source in ("all", "inat")
+    summary   = []
 
-    # ── 1. GBIF ────────────────────────────────────────────────────────────────
-    if use_gbif and budget > 0:
+    # ── 1. PlantNet related images (organ-tagged, 1 call) ─────────────────────
+    if use_pn:
+        pn_result, pn_status = collect_plantnet_by_organ(plant, api_key, organs, n_per_organ)
+        log(f"    PlantNet related: {pn_status}")
+        for organ in organs:
+            for u in pn_result.get(organ, []):
+                if u not in seen:
+                    images[organ].append(u)
+                    seen.add(u)
+        pn_total = sum(len(images[o]) for o in organs)
+        summary.append(f"PlantNet:{pn_total}")
+
+    # ── 2. Compute missing slots ──────────────────────────────────────────────
+    missing = sum(max(0, n_per_organ - len(images[o])) for o in organs)
+    # Cap untagged photos to max_untagged if specified
+    untagged_budget = min(missing, max_untagged) if max_untagged is not None else missing
+
+    # ── 3. GBIF — fill untagged pool ─────────────────────────────────────────
+    if use_gbif and untagged_budget > 0:
         log("    Collecting from GBIF…")
-        gbif_urls, gbif_st = collect_gbif_urls(sci, budget, seen=seen)
+        gbif_urls, gbif_st = collect_gbif_urls(sci, untagged_budget * 3)
         log(f"    GBIF: {gbif_st}")
         added = 0
         for u in gbif_urls:
-            if u not in seen and added < budget:
-                images["untagged"].append({"url": u, "source": "gbif"})
+            if u not in seen and added < untagged_budget:
+                images["untagged"].append(u)
                 seen.add(u)
                 added += 1
         summary.append(f"GBIF:{added}")
-        budget -= added
+        untagged_budget -= added
 
-    # ── 2. PlantNet ────────────────────────────────────────────────────────────
-    if use_pn and budget > 0:
-        seed_url = plant["own_images"][0]
-        pn_urls, pn_reserve, pn_status, pn_id, matched = collect_plantnet_related(
-            seed_url, api_key, sci, budget, exclude=seen
-        )
-        log(f"    PlantNet related: {pn_status}")
-        if pn_id:
-            log(f"    PlantNet identified reference photo as: {pn_id['name']} ({pn_id['score']}%)", "ok")
+    # ── 4. iNaturalist — fill remaining untagged pool ─────────────────────────
+    if use_inat and untagged_budget > 0:
+        log("    Collecting from iNaturalist…")
+        inat_urls, inat_st = collect_inat_urls(sci, untagged_budget * 3)
+        log(f"    iNat: {inat_st}")
         added = 0
-        if matched:
-            for u in pn_urls:
-                if u not in seen and added < budget:
-                    images["untagged"].append({"url": u, "source": "plantnet"})
-                    seen.add(u)
-                    added += 1
-            reserve["plantnet"] = pn_reserve
-        else:
-            log("    PlantNet didn't recognize this species — falling back to GBIF for these slots.", "warn")
-            fb_urls, fb_st = collect_gbif_urls(sci, budget, seen=seen)
-            log(f"    GBIF fallback: {fb_st}")
-            for u in fb_urls:
-                if u not in seen and added < budget:
-                    images["untagged"].append({"url": u, "source": "gbif"})
-                    seen.add(u)
-                    added += 1
-        summary.append(f"PlantNet:{added}")
-        budget -= added
-
-    fetch_state["seen_urls"] = seen
+        for u in inat_urls:
+            if u not in seen and added < untagged_budget:
+                images["untagged"].append(u)
+                seen.add(u)
+                added += 1
+        summary.append(f"iNat:{added}")
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    status   = " | ".join(summary) + f" → {len(images['untagged'])}/{n_photos}"
+    tagged   = {o: len(images[o]) for o in organs if images[o]}
+    untagged = len(images["untagged"])
+    status   = " | ".join(summary) + f" → tagged:{tagged} untagged:{untagged}"
     return images, status
-
-
-def locate_slot(images, flat_index):
-    """Map a flat photo-slot index (as produced by collect_photo_slots) back
-    to (key, position) inside the raw `images` dict."""
-    order = ["own", "untagged"]
-    counter = 0
-    for key in order:
-        lst = images.get(key, [])
-        for pos in range(len(lst)):
-            if counter == flat_index:
-                return key, pos
-            counter += 1
-    return None, None
-
-
-def replace_rejected_photo(plant, sci, key, pos, api_key="", try_replace=True, target_source=None, good_refs=None):
-    """
-    Remove images[key][pos] (a rejected photo). If try_replace is True, also
-    try to fetch exactly one replacement — from `target_source` if given
-    (lets the user pick a different origin, e.g. a GBIF photo replaced by a
-    PlantNet one), otherwise from the SAME source it came from.
-
-    When switching to PlantNet, the reference photo submitted is one of the
-    GOOD photos the user kept (`good_refs`) — never the photo being rejected,
-    since a bad photo tends to produce a bad/ambiguous identification and
-    pull in images of the wrong species. If PlantNet's candidates don't
-    include the target species at all, this falls back to GBIF instead of
-    trusting an unrelated species' photos.
-
-    Returns (note, new_url, plantnet_id):
-      - on success: (None or an info note, new_url, plantnet_id)
-      - if try_replace is False, or no replacement was available:
-        (note_or_None, None, plantnet_id) — the photo is simply dropped and
-        the species ends up with one fewer photo.
-      plantnet_id is {"name":..., "score":...} when a fresh PlantNet call was
-      made this time (so the caller can show what PlantNet identified the
-      reference photo as) — None otherwise.
-    """
-    images = plant["images"]
-    if key not in images or pos >= len(images[key]):
-        return None, None, None
-    item   = images[key].pop(pos)
-    source = item.get("source", "")
-
-    fetch_state = plant["_fetch_state"]
-    seen = fetch_state["seen_urls"]
-    seen.add(item["url"])
-
-    if not try_replace:
-        return None, None, None
-
-    use_source = target_source or source
-
-    new_url = None
-    plantnet_id = None
-    note = None
-    if use_source == "own":
-        own  = plant.get("own_images", [])
-        used = fetch_state.get("own_used", 0)
-        if used < len(own):
-            new_url = own[used]
-            fetch_state["own_used"] = used + 1
-    elif use_source == "plantnet":
-        pool = plant["_reserve"]["plantnet"]
-        while pool:
-            candidate = pool.pop(random.randrange(len(pool)))
-            if candidate not in seen:
-                new_url = candidate
-                break
-        # Reserve empty (or never populated): submit one of the GOOD photos
-        # still kept for this species as the new PlantNet reference — not
-        # the photo being rejected, which is presumably why it's a bad seed.
-        if new_url is None and api_key:
-            refs = [u for u in (good_refs or []) if u not in seen]
-            if refs:
-                ref_url = random.choice(refs)
-                pn_urls, pn_reserve, _pn_status, plantnet_id, matched = collect_plantnet_related(
-                    ref_url, api_key, sci, 3, exclude=seen
-                )
-                if matched:
-                    candidates = pn_urls + pn_reserve
-                    if candidates:
-                        new_url = candidates[0]
-                        plant["_reserve"]["plantnet"].extend(candidates[1:])
-                else:
-                    note = (f"{sci}: PlantNet didn't recognize this species from the "
-                            f"reference photo — falling back to GBIF.")
-                    use_source = "gbif"
-                    urls, _ = collect_gbif_urls(sci, 3, seen=seen)
-                    new_url = next((u for u in urls if u not in seen), None)
-            else:
-                note = f"{sci}: no other photo available to use as a PlantNet reference."
-    elif use_source == "gbif":
-        urls, _ = collect_gbif_urls(sci, 3, seen=seen)
-        new_url = next((u for u in urls if u not in seen), None)
-
-    if new_url:
-        images[key].append({"url": new_url, "source": use_source})
-        seen.add(new_url)
-        return note, new_url, plantnet_id
-
-    label = {"own": "your photos", "plantnet": "PlantNet",
-             "gbif": "GBIF", "inat": "iNaturalist"}.get(use_source, use_source or "?")
-    fail_msg = f"{sci}: no more photos available from {label} — one fewer photo for this species."
-    combined = f"{note} {fail_msg}" if note else fail_msg
-    return combined, None, plantnet_id
 
 # ── Anki builder (genanki → Basic + JS random photo) ─────────────────────────
 #
 # Architecture:
 #   - One NOTE per species → one CARD per species
-#   - Field PhotosHTML: pre-rendered <img> tags for all available photos
+#   - Field PhotosJSON: JSON array [{url, organ}, ...] of all available photos
 #   - Front template: JS picks a random photo each review
 #   - Back template: {{FrontSide}} + species name + common name + info
 #
@@ -737,9 +530,19 @@ FRONT_TEMPLATE = """
   for (var i = 0; i < imgs.length; i++) {
     imgs[i].style.display = (i === idx) ? 'block' : 'none';
   }
+
+  var organ = imgs[idx].getAttribute('data-organ') || '';
+  var organEl = document.getElementById('pn-organ');
+  if (organEl) organEl.textContent = organ;
 })();
 </script>
 """.strip()
+
+
+
+
+
+
 
 
 BACK_TEMPLATE = """
@@ -774,47 +577,39 @@ def make_genanki_model(front_template=None):
 
 
 def collect_photo_slots(images, lang="en"):
-    """Return list of {url, source, key} dicts for all available photos.
-    `key` is the raw images-dict key ('own' or 'untagged') and `source` is
-    where the photo came from — used by the photo-review step to know how
-    to fetch a same-source replacement."""
+    """Return list of {url, organ} dicts for all available photos."""
+    labels = ORGAN_LABELS.get(lang, ORGAN_LABELS["en"])
     slots = []
-    order = ["own", "untagged"]
+    order = list(ORGAN_LABELS["en"].keys()) + ["own", "untagged"]
     for key in order:
-        for item in images.get(key, []):
+        for url in images.get(key, []):
             if len(slots) >= MAX_PHOTO_SLOTS:
                 return slots
-            slots.append({
-                "url": item["url"],
-                "source": item.get("source", ""),
-                "key": key,
-            })
+            slots.append({"url": url, "organ": labels.get(key, "")})
     return slots
 
 
 def build_info_html(plant, lang="en"):
     i = plant.get("info", {})
     rows = []
-    fam = plant.get("family", "")
-    if fam:
-        label = "Famille" if lang == "fr" else "Family"
-        rows.append(f"<b>{label}</b> : {fam}" if lang == "fr" else f"<b>{label}</b>: {fam}")
-
-    extra_name = i.get("extra_common_name", "")
-    extra_lang = i.get("extra_lang", "")
-    if extra_name:
-        label = f"Nom ({extra_lang.upper()})" if lang == "fr" else f"Name ({extra_lang.upper()})"
-        rows.append(f"<b>{label}</b> : {extra_name}")
-
-    html = "<br>".join(rows)
-
-    note = i.get("personal_note", "")
-    if note:
-        label = "Note personnelle" if lang == "fr" else "Personal note"
-        note_html = (f'<div style="margin-top:10px;padding:6px 10px;background:#FAEEDA;'
-                     f'border-radius:6px;font-style:italic">📝 <b>{label}</b> : {note}</div>')
-        html = html + note_html if html else note_html
-    return html
+    fam = plant.get("family") or i.get("tb_family", "")
+    if lang == "fr":
+        if fam:               rows.append(f"<b>Famille</b> : {fam}")
+        if i.get("flowering"):    rows.append(f"<b>Floraison</b> : {i['flowering']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("perennial"):    rows.append(f"<b>Type bio.</b> : {i['perennial']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("habitat"):      rows.append(f"<b>Habitat</b> : {i['habitat']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("edible"):       rows.append(f"<b>Comestible</b> : {i['edible']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("medicinal"):    rows.append(f"<b>Médicinal</b> : {i['medicinal']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("toxicity"):     rows.append(f"<b>Toxicité</b> : {i['toxicity']} <small style='color:#aaa'>(PFAF)</small>")
+    else:
+        if fam:               rows.append(f"<b>Family</b>: {fam}")
+        if i.get("flowering"):    rows.append(f"<b>Flowering</b>: {i['flowering']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("perennial"):    rows.append(f"<b>Bio. type</b>: {i['perennial']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("habitat"):      rows.append(f"<b>Habitat</b>: {i['habitat']} <small style='color:#aaa'>(Tela Botanica)</small>")
+        if i.get("edible"):       rows.append(f"<b>Edible</b>: {i['edible']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("medicinal"):    rows.append(f"<b>Medicinal</b>: {i['medicinal']} <small style='color:#aaa'>(PFAF)</small>")
+        if i.get("toxicity"):     rows.append(f"<b>Toxicity</b>: {i['toxicity']} <small style='color:#aaa'>(PFAF)</small>")
+    return "<br>".join(rows)
 
 
 def build_anki_pkg(plants, deck_name, media_files=None, lang="en"):
@@ -839,7 +634,7 @@ def build_anki_pkg(plants, deck_name, media_files=None, lang="en"):
         # Build PhotosHTML: all images hidden, JS will show one randomly
         img_style = 'max-width:300px;max-height:240px;border-radius:8px;display:none;margin:0 auto'
         photos_html = "".join(
-            f'<img src="{s["url"]}" class="pn-img"'
+            f'<img src="{s["url"]}" class="pn-img" data-organ="{s["organ"]}"'
             f' style="{img_style}">'
             for s in slots
         )
@@ -855,9 +650,7 @@ def build_anki_pkg(plants, deck_name, media_files=None, lang="en"):
     return buf.getvalue()
 
 # ── Generation worker ─────────────────────────────────────────────────────────
-def run_generation(config, session, my_gen_id=None):
-    _local.session = session  # this thread now resolves state/state_lock to `session`
-
+def run_generation(config, my_gen_id=None):
     def should_stop():
         with state_lock:
             return state["stopped"] or (my_gen_id is not None and state["gen_id"] != my_gen_id)
@@ -877,106 +670,54 @@ def run_generation(config, session, my_gen_id=None):
         plants = [p for p in state["plants"] if p["scientific"] in selected_names]
 
     api_key      = config.get("api_key", "")
-    n_photos     = int(config.get("n_photos", 4))
+    n_per_organ  = int(config.get("n_photos", 2))
+    max_untagged = config.get("max_untagged")
+    max_untagged = int(max_untagged) if max_untagged is not None else None
+    organs       = config.get("organs", ["flower", "leaf", "habit"])
     photo_source = config.get("photo_source", "all")
     include_own  = config.get("include_own", True)
-    review_photos = config.get("review_photos", False)
-    lang         = config.get("lang", "en")
-    extra_lang_enabled = config.get("extra_lang_enabled", False)
-    extra_lang         = config.get("extra_lang", "")
-
-    # Made available to the /review_data, /review_reject HTTP handlers
-    with state_lock:
-        state["gen_lang"]    = lang
-        state["gen_api_key"] = api_key
-        state["review_pending"] = False
 
     # Reset per-plant data so previous runs don't bleed through
     for p in plants:
-        p.pop("info",         None)
-        p.pop("images",       None)
-        p.pop("_slots",       None)
-        p.pop("_fetch_state", None)
-        p.pop("_reserve",     None)
+        p.pop("info",    None)
+        p.pop("images",  None)
+        p.pop("_slots",  None)
 
-    log(f"Starting — {len(plants)} species | {n_photos} photo(s)/species | own photos: {include_own} | source: {photo_source}")
+    log(f"Starting — {len(plants)} species | organs: {organs} | {n_per_organ}/organ | own photos: {include_own} | source: {photo_source}")
 
     for i, plant in enumerate(plants):
         if should_stop():
             break
         sci = plant["scientific"]
-        pct = int(5 + (i / len(plants)) * 80)
+        pct = int(5 + (i / len(plants)) * 85)
         set_progress(pct)
         log(f"[{i+1}/{len(plants)}] {sci}")
-        plant["info"]         = {}
-        plant["images"]       = {}
-        plant["_fetch_state"] = {"own_used": 0, "seen_urls": set()}
-        plant["_reserve"]     = {"plantnet": []}
+        plant["info"]   = {}
+        plant["images"] = {}
 
         # Own photos (only if include_own is enabled)
         if include_own and plant["own_images"]:
-            n_own = min(4, len(plant["own_images"]))
-            plant["images"]["own"] = [{"url": u, "source": "own"} for u in plant["own_images"][:n_own]]
-            plant["_fetch_state"]["own_used"] = n_own
-            log(f"  📷 {n_own} own photo(s)", "ok")
+            plant["images"]["own"] = plant["own_images"][:4]
+            log(f"  📷 {len(plant['images']['own'])} own photo(s)", "ok")
 
-        # Photos from external sources (GBIF → PlantNet)
-        if n_photos > 0:
+        # Organ-tagged + untagged photos from external sources
+        if n_per_organ > 0:
             extra_images, status = fetch_photos_for_plant(
-                plant, sci, n_photos, api_key, photo_source
+                plant, sci, organs, n_per_organ, api_key, photo_source,
+                max_untagged=max_untagged
             )
             log(f"  Photos: {status}", "ok" if any(extra_images.values()) else "warn")
             plant["images"].update(extra_images)
 
-        # Common name: use the CSV's "current common name" if present —
-        # no PlantNet/GBIF/iNaturalist lookup needed in that case.
-        csv_common = plant.get("csv_common_name", "")
-        if csv_common:
-            plant["info"]["common_name"] = csv_common
-            log(f"  Common name: {csv_common} (from CSV)", "ok")
+        # Common name: PlantNet API (fr→en) then Wikipedia (fr→en)
+        lang      = config.get("lang", "en")
+        log(f"  Lang: {lang}", "ok")
+        cn, cn_status = fetch_common_name(sci, api_key, lang=lang)
+        if cn:
+            plant["info"]["common_name"] = cn
+            log(f"  Common name: {cn} ({cn_status})", "ok")
         else:
-            cn, cn_status = fetch_common_names_all(sci, api_key, lang=lang)
-            if cn:
-                plant["info"]["common_name"] = cn
-                log(f"  Common name: {cn} ({cn_status})", "ok")
-            else:
-                log(f"  Common name: {cn_status}", "warn")
-
-        # Optional extra name in another language, on top of the CSV/card-lang name
-        if extra_lang_enabled and extra_lang:
-            # Skip if we'd just be repeating the lookup we already did above
-            already_have = (not csv_common) and (extra_lang == lang)
-            if not already_have:
-                extra_name, extra_status = fetch_common_names_all(sci, api_key, lang=extra_lang)
-                if extra_name:
-                    plant["info"]["extra_common_name"] = extra_name
-                    plant["info"]["extra_lang"] = extra_lang
-                    log(f"  Name ({extra_lang}): {extra_name} ({extra_status})", "ok")
-                else:
-                    log(f"  Name ({extra_lang}): {extra_status}", "warn")
-
-        # Personal note from the CSV, added to the card if not empty
-        notes = plant.get("personal_notes", [])
-        if notes:
-            plant["info"]["personal_note"] = " ; ".join(notes)
-            log(f"  Personal note: {plant['info']['personal_note'][:60]}", "ok")
-
-    # ── Photo review (optional) ────────────────────────────────────────────
-    if review_photos and n_photos > 0 and not should_stop():
-        log("Waiting for photo review…", "ok")
-        set_progress(88, "Waiting for photo review…")
-        with state_lock:
-            state["review_pending"] = True
-        session["review_event"] = threading.Event()
-        review_event = session["review_event"]
-        while not review_event.is_set():
-            if should_stop():
-                break
-            review_event.wait(timeout=0.5)
-        with state_lock:
-            state["review_pending"] = False
-        if not should_stop():
-            log("Photo review complete.", "ok")
+            log(f"  Common name: {cn_status}", "warn")
 
     set_progress(93)
     deck_name = config.get("deck_name", "PlantNet – Botany")
@@ -1022,7 +763,7 @@ def run_generation(config, session, my_gen_id=None):
                     f.write(r.content)
                 media_files.append(fpath)
                 url_to_fname[url] = fname
-                log(f"  ✓ {idx+1}/{total_imgs}  {size_kb:.0f} KB  {slot['source'] or 'untagged'}", "ok")
+                log(f"  ✓ {idx+1}/{total_imgs}  {size_kb:.0f} KB  {slot['organ'] or 'untagged'}", "ok")
             except Exception as ex:
                 log(f"  ⚠ {url[:50]}: {ex}", "warn")
                 url_to_fname[url] = None
@@ -1034,7 +775,7 @@ def run_generation(config, session, my_gen_id=None):
         for p in plants:
             slots = collect_photo_slots(p.get("images", {}))
             p["_slots"] = [
-                {"url": url_to_fname[s["url"]] or s["url"]}
+                {"url": url_to_fname[s["url"]] or s["url"], "organ": s["organ"]}
                 for s in slots
             ]
 
@@ -1059,59 +800,486 @@ def run_generation(config, session, my_gen_id=None):
         log(f"Done — {len(plants)} species, {total_cards} cards, {total_photos} photos", "ok")
 
 
+# ── Embedded HTML ─────────────────────────────────────────────────────────────
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PlantNet → Anki</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{--green:#1D9E75;--green-light:#E1F5EE;--green-dark:#085041;--amber:#BA7517;--amber-light:#FAEEDA;--text:#2C2C2A;--text-muted:#888780;--border:rgba(0,0,0,0.12);--bg:#FAFAF8;--white:#fff;--radius:12px;--radius-sm:8px;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:2rem 1rem;}
+.container{max-width:760px;margin:0 auto;}
+header{text-align:center;margin-bottom:2rem;}
+header h1{font-family:'DM Serif Display',serif;font-size:2.1rem;font-weight:400;color:var(--green-dark);margin-bottom:.3rem;}
+header p{color:var(--text-muted);font-size:.9rem;}
+.card{background:var(--white);border:.5px solid var(--border);border-radius:var(--radius);padding:1.4rem;margin-bottom:1rem;}
+.card-title{font-family:'DM Serif Display',serif;font-size:1.1rem;font-weight:400;color:var(--green-dark);margin-bottom:.2rem;}
+.card-sub{font-size:.82rem;color:var(--text-muted);margin-bottom:1rem;}
+label{display:block;font-size:.82rem;font-weight:500;margin-bottom:4px;}
+input[type=text],input[type=password],select{width:100%;padding:.5rem .8rem;border:.5px solid var(--border);border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:.87rem;background:var(--bg);color:var(--text);outline:none;transition:border-color .15s;}
+input:focus,select:focus{border-color:var(--green);}
+.form-row{margin-bottom:.85rem;}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:.55rem 1.1rem;border-radius:var(--radius-sm);font-family:'DM Sans',sans-serif;font-size:.88rem;font-weight:500;cursor:pointer;border:.5px solid var(--border);transition:all .15s;}
+.btn-primary{background:var(--green);color:white;border-color:var(--green);}
+.btn-primary:hover{background:var(--green-dark);}
+.btn-primary:disabled{opacity:.4;cursor:not-allowed;}
+.btn-secondary{background:var(--white);color:var(--text);}
+.btn-secondary:hover{background:#F1EFE8;}
+.actions{display:flex;gap:10px;align-items:center;margin-top:1rem;}
+.notice{padding:.6rem .9rem;border-radius:var(--radius-sm);font-size:.81rem;margin-bottom:.85rem;border-left:3px solid;}
+.notice-info{background:#E6F1FB;color:#0C447C;border-color:#185FA5;}
+.notice-green{background:var(--green-light);color:var(--green-dark);border-color:var(--green);}
+.drop-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:1.75rem 1rem;text-align:center;cursor:pointer;transition:all .2s;background:var(--bg);}
+.drop-zone:hover,.drop-zone.over{border-color:var(--green);background:var(--green-light);}
+.drop-zone.done{border-color:var(--green);border-style:solid;background:var(--green-light);}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:.6rem;}
+.ibtn{display:flex;align-items:center;gap:7px;padding:.5rem .8rem;border:.5px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:.79rem;background:var(--white);transition:all .15s;font-family:'DM Sans',sans-serif;}
+.ibtn.active{border-color:var(--green);background:var(--green-light);color:var(--green-dark);}
+.ibtn .src{margin-left:auto;font-size:.67rem;color:var(--text-muted);font-style:italic;}
+.ibtn.active .src{color:var(--green);}
+.organ-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:.6rem;}
+.obtn{display:flex;flex-direction:column;align-items:center;gap:2px;padding:.6rem .4rem;border:.5px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:.77rem;background:var(--white);transition:all .15s;font-family:'DM Sans',sans-serif;}
+.obtn.active{border-color:var(--green);background:var(--green-light);color:var(--green-dark);}
+.slider-row{display:flex;align-items:center;gap:10px;margin-top:.4rem;}
+.sval{font-weight:500;min-width:20px;color:var(--green-dark);}
+input[type=range]{flex:1;accent-color:var(--green);}
+.plant-list{display:flex;flex-direction:column;gap:5px;max-height:320px;overflow-y:auto;margin-top:.7rem;}
+.pi{display:flex;align-items:center;gap:8px;padding:.55rem .8rem;background:var(--bg);border:.5px solid var(--border);border-radius:var(--radius-sm);font-size:.83rem;}
+.pi.sel{border-color:var(--green);background:var(--green-light);}
+.pi input[type=checkbox]{accent-color:var(--green);width:14px;height:14px;flex-shrink:0;}
+.pname{font-weight:500;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.psci{font-style:italic;color:var(--text-muted);font-size:.77rem;}
+.pmeta{font-size:.71rem;color:var(--text-muted);flex-shrink:0;}
+.badge{display:inline-block;padding:1px 6px;border-radius:20px;font-size:.68rem;font-weight:500;background:#E6F1FB;color:#185FA5;}
+.sel-row{display:flex;justify-content:space-between;font-size:.79rem;color:var(--text-muted);margin-bottom:.4rem;}
+.lbtn{background:none;border:none;color:var(--green);cursor:pointer;font-size:.79rem;font-family:'DM Sans',sans-serif;text-decoration:underline;}
+.prog-bar{width:100%;height:5px;background:#F1EFE8;border-radius:3px;overflow:hidden;margin:.7rem 0;}
+.prog-fill{height:100%;background:var(--green);border-radius:3px;transition:width .3s;}
+.log-area{background:var(--bg);border:.5px solid var(--border);border-radius:var(--radius-sm);padding:.6rem .8rem;font-size:.77rem;font-family:monospace;color:var(--text-muted);max-height:220px;overflow-y:auto;line-height:1.85;}
+.lok{color:var(--green);}.lwarn{color:var(--amber);}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:.8rem 0;}
+.stat{background:var(--bg);border-radius:var(--radius-sm);padding:.7rem;text-align:center;}
+.snum{font-family:'DM Serif Display',serif;font-size:1.6rem;color:var(--green-dark);}
+.slbl{font-size:.73rem;color:var(--text-muted);}
+.hidden{display:none!important;}
+.toggle-row{display:flex;align-items:center;gap:8px;margin-bottom:.6rem;}
+.toggle-switch{position:relative;width:36px;height:20px;cursor:pointer;flex-shrink:0;}
+.toggle-switch input{opacity:0;width:0;height:0;}
+.toggle-track{position:absolute;inset:0;background:var(--border);border-radius:10px;transition:.2s;}
+.toggle-switch input:checked+.toggle-track{background:var(--green);}
+.toggle-thumb{position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;left:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2);}
+.toggle-switch input:checked~.toggle-thumb{transform:translateX(16px);}
+.toggle-lbl{font-size:.83rem;font-weight:500;}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div style="font-size:1.9rem;margin-bottom:.35rem">🌿</div>
+    <h1>PlantNet → Anki</h1>
+    <p>Local tool — all data stays on your machine</p>
+  </header>
+
+  <!-- STEP 1: Import CSV -->
+  <div id="sec-import" class="card">
+    <div class="card-title">Import PlantNet CSV</div>
+    <div class="card-sub">Export from identify.plantnet.org → My profile → My observations → Export CSV</div>
+    <div class="drop-zone" id="dz"
+      onclick="document.getElementById('file-in').click()"
+      ondragover="event.preventDefault();dz.classList.add('over')"
+      ondragleave="dz.classList.remove('over')"
+      ondrop="onDrop(event)">
+      <div style="font-size:1.7rem;margin-bottom:.3rem" id="dz-icon">📂</div>
+      <div style="font-size:.87rem;color:var(--text-muted)" id="dz-label">Drop CSV here or click to browse</div>
+      <div style="font-size:.73rem;color:var(--text-muted);margin-top:2px" id="dz-hint">.csv exported from PlantNet</div>
+    </div>
+    <input type="file" id="file-in" accept=".csv,.tsv,.txt" style="display:none" onchange="onFile(event)">
+  </div>
+
+  <!-- STEP 2: Plant selection -->
+  <div id="sec-plants" class="card hidden">
+    <div class="card-title">Select species</div>
+    <div class="card-sub" id="plants-sub">0 species imported</div>
+    <div class="sel-row">
+      <span id="sel-count">0 selected</span>
+      <span>
+        <button class="lbtn" onclick="selAll(true)">All</button>&nbsp;·&nbsp;
+        <button class="lbtn" onclick="selAll(false)">None</button>
+      </span>
+    </div>
+    <div class="plant-list" id="plant-list"></div>
+  </div>
+
+  <!-- STEP 3: Options -->
+  <div id="sec-options" class="card hidden">
+    <div class="card-title">Options</div>
+
+    <div class="form-row">
+      <label>Deck name</label>
+      <input type="text" id="deck-name" value="PlantNet – Botany">
+    </div>
+
+    <div class="form-row">
+      <label>PlantNet API key <span style="color:var(--text-muted);font-weight:400">(optional — extra photos per organ)</span></label>
+      <input type="password" id="api-key" placeholder="2b10xxxxxxxxxxxxxxxxxxxxxxxx">
+      <div style="font-size:.72rem;color:var(--text-muted);margin-top:3px">Free key at my.plantnet.org · 500 req/day</div>
+    </div>
+
+    <div class="form-row">
+      <label>Extra photo source</label>
+      <select id="photo-source" onchange="updatePhotoSourceHint()">
+        <option value="none">None — own photos only</option>
+        <option value="all" selected>All sources — GBIF → iNaturalist → PlantNet (stops when full)</option>
+        <option value="gbif">GBIF only</option>
+        <option value="inat">iNaturalist only</option>
+        <option value="plantnet">PlantNet only (requires own photo + API key)</option>
+      </select>
+      <div id="photo-source-hint" style="font-size:.72rem;color:var(--text-muted);margin-top:4px">
+        Submits your own photo to PlantNet and retrieves visually similar images per organ.
+      </div>
+    </div>
+
+
+    <div class="form-row">
+      <label style="margin-bottom:.5rem">Organs to fetch photos for</label>
+      <div class="organ-grid">
+        <button class="obtn active" data-organ="flower" onclick="toggleBtn(this)"><span>🌸</span>Flower</button>
+        <button class="obtn active" data-organ="leaf"   onclick="toggleBtn(this)"><span>🍃</span>Leaf</button>
+        <button class="obtn active" data-organ="habit"  onclick="toggleBtn(this)"><span>🌿</span>Habit</button>
+        <button class="obtn"        data-organ="fruit"  onclick="toggleBtn(this)"><span>🍎</span>Fruit</button>
+        <button class="obtn"        data-organ="bark"   onclick="toggleBtn(this)"><span>🪵</span>Bark</button>
+      </div>
+      <div style="font-size:.72rem;color:var(--text-muted);margin-top:5px">
+        Organ labels come from PlantNet. GBIF/iNat photos are stored as untagged.
+      </div>
+    </div>
+
+    <div class="form-row" id="n-photos-row">
+      <label>Photos per organ (max)</label>
+      <div class="slider-row">
+        <input type="range" id="n-photos" min="1" max="5" value="2"
+          oninput="document.getElementById('n-photos-val').textContent=this.value">
+        <span class="sval" id="n-photos-val">2</span>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label>Max untagged photos <span style="color:var(--text-muted);font-weight:400">(from GBIF/iNat when organ not found)</span></label>
+      <div class="slider-row">
+        <input type="range" id="max-untagged" min="0" max="10" value="3"
+          oninput="document.getElementById('max-untagged-val').textContent=this.value">
+        <span class="sval" id="max-untagged-val">3</span>
+      </div>
+      <div style="font-size:.72rem;color:var(--text-muted);margin-top:3px">
+        Set to 0 to disable untagged photos entirely.
+      </div>
+    </div>
+
+    </div>
+
+    <div class="form-row">
+      <label>Card language / Langue des cartes</label>
+      <select id="lang-select">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="es">Español</option>
+      </select>
+    </div>
+
+    <div class="toggle-row">
+      <label class="toggle-switch">
+        <input type="checkbox" id="tog-own" checked>
+        <div class="toggle-track"></div><div class="toggle-thumb"></div>
+      </label>
+      <div>
+        <span class="toggle-lbl">Include own PlantNet photos</span>
+        <div style="font-size:.75rem;color:var(--text-muted)">Photos from your CSV observations. Uncheck to use only enriched photos (GBIF, iNat, PlantNet related).</div>
+      </div>
+    </div>
+
+    </div>
+
+    <div class="toggle-row" style="margin-top:.6rem">
+      <label class="toggle-switch">
+        <input type="checkbox" id="tog-embed">
+        <div class="toggle-track"></div><div class="toggle-thumb"></div>
+      </label>
+      <div>
+        <span class="toggle-lbl">Embed images in .apkg</span>
+        <div style="font-size:.75rem;color:var(--text-muted)">Downloads all photos into the deck — instant loading, works offline. Slower generation, larger file.</div>
+      </div>
+    </div>
+
+
+    <div class="actions">
+      <button class="btn btn-primary" id="btn-start" onclick="startGen()">▶ Start generation</button>
+    </div>
+  </div>
+
+  <!-- STEP 4: Progress -->
+  <div id="sec-progress" class="card hidden">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:.2rem">
+      <div class="card-title">Generating deck</div>
+      <button class="btn btn-secondary" id="btn-stop" onclick="stopGen()"
+        style="font-size:.8rem;padding:.35rem .8rem;color:#D85A30;border-color:#D85A30">
+        ■ Stop
+      </button>
+    </div>
+    <div class="card-sub" id="gen-sub">Processing…</div>
+    <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--text-muted);margin-bottom:.6rem">
+      <span id="prog-label"></span>
+      <span id="prog-pct">0%</span>
+    </div>
+    <div class="log-area" id="log-area"></div>
+  </div>
+
+  <!-- STEP 5: Export -->
+  <div id="sec-export" class="card hidden">
+    <div class="card-title">Deck ready!</div>
+    <div class="card-sub">Data from Tela Botanica and PFAF</div>
+    <div class="stats">
+      <div class="stat"><div class="snum" id="st-plants">0</div><div class="slbl">Species</div></div>
+      <div class="stat"><div class="snum" id="st-cards">0</div><div class="slbl">Cards</div></div>
+      <div class="stat"><div class="snum" id="st-photos">0</div><div class="slbl">Photos</div></div>
+    </div>
+
+
+    <div class="actions">
+      <button class="btn btn-primary" onclick="downloadDeck()">⬇️ Download deck (.apkg)</button>
+      <button class="btn btn-secondary" onclick="location.reload()">New deck</button>
+    </div>
+    <div style="font-size:.74rem;color:var(--text-muted);margin-top:.6rem">
+      Double-cliquez sur le .apkg pour importer directement dans Anki
+      (ou File → Import). Le type de note PlantNet est inclus dans le fichier.
+    </div>
+  </div>
+</div>
+
+<script>
+var plants = [];
+var csvText = "";
+
+// ── Drag & drop ──────────────────────────────────────────────────────────────
+var dz = document.getElementById("dz");
+function onDrop(e) {
+  e.preventDefault(); dz.classList.remove("over");
+  var f = e.dataTransfer.files[0]; if (f) uploadFile(f);
+}
+function onFile(e) { var f = e.target.files[0]; if (f) uploadFile(f); }
+
+function uploadFile(file) {
+  var fd = new FormData(); fd.append("csv", file);
+  fetch("/upload", { method: "POST", body: fd })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.error) { alert("Error: " + d.error); return; }
+      plants = d.plants;
+      dz.classList.add("done");
+      document.getElementById("dz-icon").textContent = "✅";
+      document.getElementById("dz-label").textContent = file.name + " — " + d.total_obs + " observation(s)";
+      document.getElementById("dz-hint").textContent = d.plants.length + " unique species detected";
+      renderPlants();
+      document.getElementById("sec-plants").classList.remove("hidden");
+      document.getElementById("sec-options").classList.remove("hidden");
+    })
+    .catch(function(e) { alert("Upload failed: " + e); });
+}
+
+// ── Plant list ───────────────────────────────────────────────────────────────
+function renderPlants() {
+  var list = document.getElementById("plant-list");
+  list.innerHTML = "";
+  plants.forEach(function(p, i) {
+    var d = document.createElement("div");
+    d.className = "pi" + (p.selected ? " sel" : "");
+    var badge = p.own_images.length > 0 ? '<span class="badge">📷 ' + p.own_images.length + "</span>" : "";
+    var obs   = p.observations > 1 ? p.observations + " obs." : "";
+    d.innerHTML = '<input type="checkbox"' + (p.selected ? " checked" : "") + ' onchange="toggleP(' + i + ',this.checked)">'
+      + '<div style="flex:1;min-width:0"><div class="pname">' + (p.scientific) + '</div>'
+      + '<div class="psci">' + (p.family||"") + '</div></div>'
+      + '<div class="pmeta">' + badge + (badge && obs ? " " : "") + obs + "</div>";
+    list.appendChild(d);
+  });
+  updateCount();
+  document.getElementById("plants-sub").textContent = plants.length + " species imported";
+}
+function toggleP(i, v) {
+  plants[i].selected = v;
+  document.querySelectorAll(".pi")[i].classList.toggle("sel", v);
+  updateCount();
+}
+function selAll(v) { plants.forEach(function(p){p.selected=v;}); renderPlants(); }
+function updateCount() {
+  var n = plants.filter(function(p){return p.selected;}).length;
+  document.getElementById("sel-count").textContent = n + " selected";
+}
+
+// ── Toggle buttons ───────────────────────────────────────────────────────────
+function toggleBtn(b) { b.classList.toggle("active"); }
+
+function updatePhotoSourceHint() {
+  var src   = document.getElementById("photo-source").value;
+  var hint  = document.getElementById("photo-source-hint");
+  var nrow  = document.getElementById("n-photos-row");
+  var hints = {
+    "none":     "Only your own photos from the PlantNet CSV will be used.",
+    "all":      "PlantNet related images (organ-tagged, 1 API call) + GBIF + iNaturalist for remaining slots (untagged).",
+    "gbif":     "GBIF only — no organ tags, photos stored as untagged.",
+    "inat":     "iNaturalist only — no organ tags, photos stored as untagged.",
+    "plantnet": "PlantNet related images only — organ-tagged, 1 API call. Requires own photo + API key."
+  };
+  hint.textContent = hints[src] || "";
+  nrow.style.display = src === "none" ? "none" : "";
+}
+
+// ── Generation ───────────────────────────────────────────────────────────────
+function startGen() {
+  var selected = plants.filter(function(p){return p.selected;});
+  if (!selected.length) { alert("Select at least one species."); return; }
+
+  var info     = Array.from(document.querySelectorAll(".ibtn.active")).map(function(b){return b.dataset.info;});
+  var organs   = Array.from(document.querySelectorAll(".obtn.active")).map(function(b){return b.dataset.organ;});
+  var photoSrc = document.getElementById("photo-source").value;
+  var config  = {
+    plants:       selected,
+    deck_name:    document.getElementById("deck-name").value || "PlantNet – Botany",
+    api_key:      document.getElementById("api-key").value.trim(),
+    n_photos:     photoSrc === "none" ? 0 : parseInt(document.getElementById("n-photos").value),
+    max_untagged: parseInt(document.getElementById("max-untagged").value),
+    photo_source: photoSrc,
+    organs:       organs,
+    info:         info,
+    lang:         document.getElementById("lang-select").value,
+    include_own:  document.getElementById("tog-own").checked,
+    embed_images: document.getElementById("tog-embed").checked,
+  };
+
+  // Reset progress UI for fresh run
+  document.getElementById("btn-start").disabled = true;
+  document.getElementById("sec-progress").classList.remove("hidden");
+  document.getElementById("log-area").innerHTML = "";
+  document.getElementById("gen-sub").textContent = "Processing…";
+  document.getElementById("prog-fill").style.width = "0%";
+  document.getElementById("prog-pct").textContent = "0%";
+  document.getElementById("prog-label").textContent = "";
+  var stopBtn = document.getElementById("btn-stop");
+  if (stopBtn) { stopBtn.style.display = ""; stopBtn.disabled = false; stopBtn.textContent = "■ Stop"; }
+
+  fetch("/generate", {
+    method:  "POST",
+    headers: {"Content-Type": "application/json"},
+    body:    JSON.stringify(config)
+  }).then(function(r){ return r.json(); })
+    .then(function(d){ if (d.error) alert("Error: " + d.error); })
+    .catch(function(e){ alert("Error: " + e); });
+
+  pollProgress();
+}
+
+function stopGen() {
+  document.getElementById("btn-stop").disabled = true;
+  document.getElementById("btn-stop").textContent = "Stopping…";
+  fetch("/stop", { method: "POST" })
+    .catch(function() {});
+}
+
+function pollProgress() {
+  fetch("/status").then(function(r){return r.json();}).then(function(d) {
+    // Update progress bar
+    document.getElementById("prog-fill").style.width = d.progress + "%";
+    document.getElementById("prog-pct").textContent  = d.progress + "%";
+    document.getElementById("prog-label").textContent = d.progress_label || "";
+
+    // Append new log lines
+    var area = document.getElementById("log-area");
+    (d.new_logs || []).forEach(function(entry) {
+      var div = document.createElement("div");
+      if (entry.level === "ok")   div.className = "lok";
+      if (entry.level === "warn") div.className = "lwarn";
+      div.textContent = "> " + entry.msg;
+      area.appendChild(div);
+      area.scrollTop = area.scrollHeight;
+    });
+
+    if (d.stopped) {
+      document.getElementById("gen-sub").textContent = "Stopped.";
+      document.getElementById("btn-stop").style.display = "none";
+      document.getElementById("btn-start").disabled = false;
+      return;
+    }
+    if (d.done) {
+      document.getElementById("gen-sub").textContent = "Done!";
+      document.getElementById("btn-stop").style.display = "none";
+      // Parse stats from last log lines
+      var logs = d.all_logs || [];
+      var lastOk = logs.filter(function(l){return l.level==="ok";}).pop();
+      if (lastOk && lastOk.msg) {
+        var m = lastOk.msg.match(/(\d+) species, (\d+) cards, (\d+) photos/);
+        if (m) {
+          document.getElementById("st-plants").textContent = m[1];
+          document.getElementById("st-cards").textContent  = m[2];
+          document.getElementById("st-photos").textContent = m[3];
+        }
+      }
+      document.getElementById("sec-export").classList.remove("hidden");
+    } else {
+      setTimeout(pollProgress, 600);
+    }
+  }).catch(function(){ setTimeout(pollProgress, 1000); });
+}
+
+function setupNoteType() {
+  var btn = document.getElementById("btn-ac");
+  var status = document.getElementById("ac-status");
+  btn.disabled = true;
+  btn.textContent = "Setting up…";
+  status.textContent = "Connecting to AnkiConnect…";
+  status.style.color = "var(--text-muted)";
+  fetch("/setup_notetype", { method: "POST" })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        status.textContent = "✓ " + d.message;
+        status.style.color = "var(--green-dark)";
+        btn.textContent = "✓ Done";
+      } else {
+        status.textContent = "✗ " + d.message;
+        status.style.color = "#D85A30";
+        btn.disabled = false;
+        btn.textContent = "Retry";
+      }
+    })
+    .catch(function(e) {
+      status.textContent = "Error: " + e;
+      status.style.color = "#D85A30";
+      btn.disabled = false;
+      btn.textContent = "Retry";
+    });
+}
+
+function downloadDeck() {
+  window.location.href = "/download";
+}
+</script>
+</body>
+</html>
+"""
+
+
 # ── HTTP request handler ──────────────────────────────────────────────────────
-SESSION_COOKIE_NAME = "pn2a_session"
+log_cursor = 0   # tracks how many log lines the client has already seen
 
 
 class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass  # silence default HTTP logs
-
-    def resolve_session(self):
-        """
-        Find this browser's session from its cookie, or create a new one.
-        Sets `_local.session` so the rest of this request's handling (via the
-        state/state_lock proxies) transparently operates on the right data.
-        Must be called first thing in do_GET/do_POST.
-        """
-        sid = None
-        cookie_header = self.headers.get("Cookie", "")
-        if cookie_header:
-            jar = SimpleCookie()
-            try:
-                jar.load(cookie_header)
-            except Exception:
-                jar = SimpleCookie()
-            if SESSION_COOKIE_NAME in jar:
-                sid = jar[SESSION_COOKIE_NAME].value
-
-        with SESSIONS_LOCK:
-            if sid and sid in SESSIONS:
-                session = SESSIONS[sid]
-                is_new = False
-            else:
-                sid = uuid.uuid4().hex
-                session = _new_session()
-                SESSIONS[sid] = session
-                is_new = True
-            session["last_seen"] = time.time()
-
-        _local.session = session
-        self._session_id = sid
-        self._session_is_new = is_new
-        return session
-
-    def end_headers(self):
-        # Attach the session cookie on the response the first time a session
-        # is created, so subsequent requests from the same browser reuse it.
-        if getattr(self, "_session_is_new", False):
-            self.send_header(
-                "Set-Cookie",
-                f"{SESSION_COOKIE_NAME}={self._session_id}; Path=/; HttpOnly; SameSite=Lax"
-            )
-            self._session_is_new = False
-        super().end_headers()
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
@@ -1122,73 +1290,32 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        self.resolve_session()
         path = urlparse(self.path).path
-        script_dir = Path(__file__).parent
 
         if path == "/" or path == "/index.html":
-            html_path = script_dir / "index.html"
-            if html_path.exists():
-                with open(html_path, "r", encoding="utf-8") as f:
-                    html = f.read()
-                flag = f"<script>window.IS_WEB = {'true' if IS_WEB else 'false'};</script>"
-                html = html.replace("</head>", f"{flag}\n</head>", 1) if "</head>" in html else flag + html
-                body = html.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", len(body))
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self.send_json({"error": "index.html not found"}, 404)
-
-        elif path == "/style.css":
-            css_path = script_dir / "style.css"
-            if css_path.exists():
-                with open(css_path, "r", encoding="utf-8") as f:
-                    body = f.read().encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/css; charset=utf-8")
-                self.send_header("Content-Length", len(body))
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self.send_json({"error": "style.css not found"}, 404)
+            body = HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
 
         elif path == "/status":
-            session = _local.session
+            global log_cursor
             with state_lock:
-                all_logs   = state["log"]
-                log_cursor = session["log_cursor"]
-                new_logs   = all_logs[log_cursor:]
-                session["log_cursor"] = len(all_logs)
+                all_logs  = state["log"]
+                new_logs  = all_logs[log_cursor:]
+                log_cursor = len(all_logs)
                 data = {
                     "progress":       state["progress"],
                     "progress_label": state.get("progress_label", ""),
                     "running":        state["running"],
                     "stopped":        state.get("stopped", False),
                     "done":           state["done"],
-                    "review_pending": state.get("review_pending", False),
                     "new_logs":       new_logs,
                     "all_logs":       all_logs,
                 }
             self.send_json(data)
-
-        elif path == "/review_data":
-            with state_lock:
-                lang = state.get("gen_lang", "en")
-                result = []
-                for idx, p in enumerate(state["plants"]):
-                    if not p.get("selected"):
-                        continue
-                    slots = collect_photo_slots(p.get("images", {}), lang=lang)
-                    result.append({
-                        "plant_index": idx,
-                        "scientific":  p["scientific"],
-                        "common_name": p.get("info", {}).get("common_name", ""),
-                        "slots":       slots,
-                    })
-            self.send_json({"plants": result})
 
         elif path == "/download":
             with state_lock:
@@ -1199,7 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             safe_name = re.sub(r"[^\w\-]", "_", name) + ".apkg"
             self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", "application/zip")
             self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
             self.send_header("Content-Length", len(pkg))
             self.end_headers()
@@ -1210,7 +1337,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        self.resolve_session()
+        global log_cursor
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
         body   = self.rfile.read(length)
@@ -1265,150 +1392,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
 
-        elif path == "/load_test_csv":
-            if IS_WEB:
-                self.send_json({"error": "Not available in the deployed version"}, 403)
-                return
-            try:
-                test_file_path = "sample-test.csv"
-                if not os.path.exists(test_file_path):
-                    self.send_json({"error": "sample-test.csv file not found in directory"}, 404)
-                    return
-                with open(test_file_path, "r", encoding="utf-8", errors="replace") as f:
-                    csv_content = f.read()
-
-                rows, sep = parse_csv(csv_content)
-                if not rows:
-                    self.send_json({"error": "Test CSV is empty or could not be parsed"}, 400)
-                    return
-
-                plants_data = group_by_species(rows)
-                for p in plants_data:
-                    p["selected"] = True
-
-                with state_lock:
-                    state["plants"] = plants_data
-
-                self.send_json({
-                    "plants":    plants_data,
-                    "total_obs": len(rows),
-                    "separator": "TAB" if sep == "\t" else sep,
-                })
-            except Exception as e:
-                self.send_json({"error": str(e)}, 500)
-
-        elif path == "/diff_upload":
-            try:
-                content_type = self.headers.get("Content-Type", "")
-                csv_content  = extract_csv_from_multipart(body, content_type)
-                if csv_content is None:
-                    self.send_json({"error": "Could not extract CSV from upload"}, 400)
-                    return
-                rows, _sep = parse_csv(csv_content)
-                if not rows:
-                    self.send_json({"error": "CSV is empty or could not be parsed"}, 400)
-                    return
-                prev_plants = group_by_species(rows)
-                prev_names  = {clean_scientific_name(p["scientific"]).lower() for p in prev_plants}
-                with state_lock:
-                    matched = [
-                        p["scientific"] for p in state["plants"]
-                        if clean_scientific_name(p["scientific"]).lower() in prev_names
-                    ]
-                self.send_json({"matched": matched, "total_prev_species": len(prev_names)})
-            except Exception as e:
-                self.send_json({"error": str(e)}, 500)
+        elif path == "/setup_notetype":
+            ok, msg = create_notetype_via_ankiconnect()
+            self.send_json({"ok": ok, "message": msg})
 
         elif path == "/stop":
             with state_lock:
                 state["stopped"] = True
             self.send_json({"ok": True})
 
-        elif path == "/review_reject":
-            try:
-                data     = json.loads(body)
-                idx      = data.get("plant_index")
-                rejected    = data.get("rejected", [])
-                try_replace = data.get("replace", True)
-                with state_lock:
-                    plant = state["plants"][idx]
-                    lang    = state.get("gen_lang", "en")
-                    api_key = state.get("gen_api_key", "")
-                    sci   = plant["scientific"]
-
-                    # Each rejected entry is either a plain flat index (old
-                    # format, "same source") or {"idx":..., "source":...} to
-                    # request a different origin for the replacement.
-                    resolved = []
-                    for entry in rejected:
-                        if isinstance(entry, dict):
-                            flat_idx    = entry.get("idx")
-                            want_source = entry.get("source") or "same"
-                        else:
-                            flat_idx, want_source = entry, "same"
-                        resolved.append((flat_idx, None if want_source == "same" else want_source))
-
-                    # Resolve all (key, pos) pairs BEFORE mutating anything,
-                    # then process each key's removals highest-position-first
-                    # so earlier positions in the same key stay valid.
-                    targets = []
-                    for flat_idx, want_source in resolved:
-                        key, pos = locate_slot(plant.get("images", {}), flat_idx)
-                        if key is not None:
-                            targets.append((key, pos, want_source))
-                    targets.sort(key=lambda kp: (kp[0], -kp[1]))
-
-                    # Photos NOT being rejected in this batch — used as PlantNet
-                    # reference photos instead of the (presumably bad) one
-                    # being replaced, computed before any pops happen.
-                    rejected_flat_idx = {flat_idx for flat_idx, _ in resolved}
-                    all_slots_before  = collect_photo_slots(plant.get("images", {}), lang=lang)
-                    good_refs = [s["url"] for i, s in enumerate(all_slots_before)
-                                 if i not in rejected_flat_idx]
-
-                    warnings = []
-                    new_urls = []
-                    pn_notes = []
-                    for key, pos, want_source in targets:
-                        w, new_url, pn_id = replace_rejected_photo(plant, sci, key, pos,
-                                                             api_key=api_key,
-                                                             try_replace=try_replace,
-                                                             target_source=want_source,
-                                                             good_refs=good_refs)
-                        if w:
-                            warnings.append(w)
-                        if new_url:
-                            new_urls.append(new_url)
-                        if pn_id:
-                            pn_notes.append(f"{sci}: PlantNet identified the reference photo as "
-                                             f"{pn_id['name']} ({pn_id['score']}%)")
-
-                    slots = collect_photo_slots(plant.get("images", {}), lang=lang)
-                    # Indices of the freshly-added replacement photos within
-                    # `slots` — the frontend uses these to show only the new
-                    # photos on subsequent review passes.
-                    replaced_indices = [i for i, s in enumerate(slots) if s["url"] in new_urls]
-                self.send_json({"ok": True, "slots": slots, "warnings": warnings,
-                                "replaced_indices": replaced_indices, "plantnet_id_notes": pn_notes})
-            except Exception as e:
-                self.send_json({"error": str(e)}, 500)
-
-        elif path == "/review_finish":
-            session = _local.session
-            with state_lock:
-                state["review_pending"] = False
-            session["review_event"].set()
-            self.send_json({"ok": True})
-
         elif path == "/generate":
             try:
-                session = _local.session
-                now = time.time()
-                if now - session.get("last_generate", 0) < 3:
-                    self.send_json({"error": "Please wait a few seconds before generating again."}, 429)
-                    return
-                session["last_generate"] = now
-
                 config = json.loads(body)
                 # Update plant selection in state
                 selected_names = {p["scientific"] for p in config["plants"]}
@@ -1417,7 +1411,7 @@ class Handler(BaseHTTPRequestHandler):
                         p["selected"] = p["scientific"] in selected_names
                     plants_to_process = [p for p in state["plants"] if p["selected"]]
 
-                session["log_cursor"] = 0  # reset log cursor for new run
+                log_cursor = 0  # reset log cursor for new run
                 with state_lock:
                     state["stopped"]        = True  # stop any running thread
                     state["gen_id"]        += 1     # invalidate old thread
@@ -1425,7 +1419,7 @@ class Handler(BaseHTTPRequestHandler):
                     my_id = state["gen_id"]
                 t = threading.Thread(
                     target=run_generation,
-                    args=(config, session, my_id),
+                    args=(config, my_id),
                     daemon=True
                 )
                 t.start()
@@ -1442,26 +1436,19 @@ class Handler(BaseHTTPRequestHandler):
 # ── Entry point ───────────────────────────────────────────────────────────────
 def main():
     print("=" * 52)
-    print("  🌿 PlantNet → Anki")
+    print("  🌿 PlantNet → Anki  (local web interface)")
     print("=" * 52)
-    if IS_WEB:
-        print(f"\n  Mode   : deployed (web)")
-        print(f"  Server : listening on {HOST}:{PORT}")
-    else:
-        print(f"\n  Mode   : local")
-        print(f"  Server : http://localhost:{PORT}")
+    print(f"\n  Server : http://localhost:{PORT}")
     print(f"  Stop   : Ctrl+C\n")
 
-    threading.Thread(target=_purge_stale_sessions, daemon=True).start()
+    server = HTTPServer(("127.0.0.1", PORT), Handler)
 
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    # Open browser after a short delay
+    def open_browser():
+        time.sleep(0.8)
+        webbrowser.open(f"http://localhost:{PORT}")
 
-    if not IS_WEB:
-        # Open browser after a short delay (local use only)
-        def open_browser():
-            time.sleep(0.8)
-            webbrowser.open(f"http://localhost:{PORT}")
-        threading.Thread(target=open_browser, daemon=True).start()
+    threading.Thread(target=open_browser, daemon=True).start()
 
     try:
         server.serve_forever()
