@@ -1007,6 +1007,8 @@ def run_generation(config, session, my_gen_id=None):
 
     if embed:
         import tempfile, os as _os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         # Collect all unique URLs across all plants
         all_slots = []
         for p in plants:
@@ -1020,33 +1022,62 @@ def run_generation(config, session, my_gen_id=None):
         downloaded_bytes = 0
         url_to_fname = {}
 
-        for idx, slot in enumerate(all_slots):
-            if should_stop():
-                log("  Download interrupted.", "warn")
-                break
+        # Téléchargement I/O-bound : plusieurs requêtes en parallèle plutôt
+        # qu'une par une. Le GIL est relâché pendant l'attente réseau, donc
+        # ça ne charge pas le CPU (important sur les instances Render à
+        # 0.1 vCPU) tout en réduisant fortement le temps d'attente total.
+        # 8 workers = compromis raisonnable pour rester poli envers les
+        # serveurs de photos (Wikimedia, PlantNet…) sans se faire limiter.
+        DOWNLOAD_WORKERS = 8
+
+        def _download_one(slot):
+            _local.session = session  # threading.local() : à définir dans CE thread aussi
             url = slot["url"]
-            pct = 93 + int((idx / max(total_imgs, 1)) * 5)
-            set_progress(pct, f"Downloading image {idx+1}/{total_imgs}…")
+            if should_stop():
+                return (url, None, 0, "stopped")
             try:
                 r = requests.get(url, timeout=15, headers=HEADERS)
                 if not r.ok:
-                    log(f"  ⚠ HTTP {r.status_code}: {url[:55]}", "warn")
-                    url_to_fname[url] = None
-                    continue
-                size_kb = len(r.content) / 1024
-                downloaded_bytes += len(r.content)
+                    return (url, None, 0, f"HTTP {r.status_code}")
+                content = r.content
                 ct  = r.headers.get("content-type", "")
-                ext = ".png" if ("png" in ct or url.lower().endswith(".png"))                       else ".webp" if ("webp" in ct or url.lower().endswith(".webp"))                       else ".jpg"
+                ext = ".png" if ("png" in ct or url.lower().endswith(".png")) \
+                    else ".webp" if ("webp" in ct or url.lower().endswith(".webp")) \
+                    else ".jpg"
                 fname = hashlib.md5(url.encode()).hexdigest() + ext
                 fpath = _os.path.join(tmpdir, fname)
                 with open(fpath, "wb") as f:
-                    f.write(r.content)
+                    f.write(content)
+                return (url, fname, len(content), None)
+            except Exception as ex:
+                return (url, None, 0, str(ex))
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as executor:
+            futures = {executor.submit(_download_one, slot): slot for slot in all_slots}
+            for future in as_completed(futures):
+                slot = futures[future]
+                url, fname, size, err = future.result()
+                completed += 1
+                pct = 93 + int((completed / max(total_imgs, 1)) * 5)
+                set_progress(pct, f"Downloading image {completed}/{total_imgs}…")
+
+                if err == "stopped":
+                    url_to_fname[url] = None
+                    continue
+                if err:
+                    log(f"  ⚠ {err}: {url[:55]}", "warn")
+                    url_to_fname[url] = None
+                    continue
+
+                downloaded_bytes += size
+                fpath = _os.path.join(tmpdir, fname)
                 media_files.append(fpath)
                 url_to_fname[url] = fname
-                log(f"  ✓ {idx+1}/{total_imgs}  {size_kb:.0f} KB  {slot['source'] or 'untagged'}", "ok")
-            except Exception as ex:
-                log(f"  ⚠ {url[:50]}: {ex}", "warn")
-                url_to_fname[url] = None
+                log(f"  ✓ {completed}/{total_imgs}  {size/1024:.0f} KB  {slot.get('source') or 'untagged'}", "ok")
+
+            if should_stop():
+                log("  Download interrupted.", "warn")
 
         total_mb = downloaded_bytes / (1024 * 1024)
         log(f"Downloaded {len(media_files)}/{total_imgs} images — {total_mb:.1f} MB total", "ok")
