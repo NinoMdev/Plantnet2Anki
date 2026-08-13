@@ -30,7 +30,6 @@ import time
 import unicodedata
 import uuid
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -469,42 +468,14 @@ def collect_plantnet_related(image_url, api_key, target_sci, n, exclude=None):
 
 def collect_gbif_urls(sci, n, seen=None):
     """
-    Fetch up to n photo URLs from GBIF occurrences, each drawn from an
-    INDEPENDENT random position across the full set of image-bearing
+    Fetch up to n photo URLs from GBIF occurrences , each drawn
+    from an INDEPENDENT random position across the full set of image-bearing
     occurrences — not a single random window (which would still clump
     results from the same import batch/collector together).
     `seen` is a set of URLs to skip (already used elsewhere).
     Returns (urls, status).
-
-    Perf notes (vs. the original one-request-per-photo version):
-      - The separate "count-only" request (limit=0) is merged into the
-        first real fetch: GBIF returns `count` in every response regardless
-        of `limit`, so no extra round trip is needed just to learn the total.
-      - Each request now fetches BATCH occurrences instead of 1, so fewer
-        round trips are needed to gather n photos.
-      - Remaining random-offset draws are issued CONCURRENTLY (I/O-bound —
-        the GIL is released while waiting on the network), instead of one
-        at a time. This is the main speedup: wall-clock time per species
-        drops from "sum of N request latencies" to roughly "one request
-        latency per parallel round".
-    Diversity is preserved: offsets are still drawn independently at random
-    across the whole occurrence space, just batched/parallelized.
     """
     seen = seen or set()
-    BATCH = 5          # occurrences fetched per request (was 1)
-    MAX_WORKERS = 8    # concurrent requests per round (keep polite to GBIF)
-    MAX_ROUNDS = 4      # safety cap so a stubborn species can't loop forever
-
-    def _extract(results):
-        urls = []
-        for res in results:
-            for m in res.get("media", []):
-                u = m.get("identifier", "")
-                if u and u.startswith("http") and u not in seen and u not in urls:
-                    urls.append(u)
-                    break  # 1 photo per occurrence, same as before
-        return urls
-
     try:
         r = requests.get(f"{GBIF_API}/species/match",
                          params={"name": sci, "verbose": "false"},
@@ -515,58 +486,37 @@ def collect_gbif_urls(sci, n, seen=None):
         if not key:
             return [], "not found in GBIF"
 
-        # First real fetch also tells us the total count — no separate
-        # limit=0 request needed.
-        r0 = requests.get(f"{GBIF_API}/occurrence/search",
-                          params={"taxonKey": key, "mediaType": "StillImage",
-                                  "limit": BATCH, "offset": 0},
+        rc = requests.get(f"{GBIF_API}/occurrence/search",
+                          params={"taxonKey": key, "mediaType": "StillImage", "limit": 0},
                           headers=HEADERS, timeout=8)
-        if not r0.ok:
-            return [], f"occurrence search HTTP {r0.status_code}"
-        data0 = r0.json()
-        total = data0.get("count", 0)
+        total = rc.json().get("count", 0) if rc.ok else 0
         if total == 0:
             return [], "no images in GBIF"
 
-        picked = _extract(data0.get("results", []))
-        tried_offsets = {0}
-        rounds = 1
-
-        def _fetch(offset):
-            try:
-                rr = requests.get(f"{GBIF_API}/occurrence/search",
-                                  params={"taxonKey": key, "mediaType": "StillImage",
-                                          "limit": BATCH, "offset": offset},
-                                  headers=HEADERS, timeout=8)
-                return rr.json().get("results", []) if rr.ok else []
-            except Exception:
-                return []
-
-        while len(picked) < n and rounds < MAX_ROUNDS and len(tried_offsets) < total:
-            offsets = []
-            attempts = 0
-            while len(offsets) < MAX_WORKERS and attempts < MAX_WORKERS * 4 \
-                    and len(tried_offsets) < total:
-                off = random.randint(0, max(total - BATCH, 0))
-                attempts += 1
-                if off in tried_offsets:
-                    continue
-                tried_offsets.add(off)
-                offsets.append(off)
-            if not offsets:
-                break
-
-            with ThreadPoolExecutor(max_workers=len(offsets)) as executor:
-                for results in executor.map(_fetch, offsets):
-                    for u in _extract(results):
-                        if len(picked) >= n:
-                            break
-                        if u not in picked:
-                            picked.append(u)
-            rounds += 1
-
-        picked = picked[:n]
-        return picked, f"{len(picked)}/{total} (random draws, batch={BATCH}, {rounds} round(s))"
+        picked, tried = [], set()
+        max_attempts = min(total, n * 5 + 10)
+        attempts = 0
+        while len(picked) < n and attempts < max_attempts and len(tried) < total:
+            offset = random.randint(0, total - 1)
+            if offset in tried:
+                continue
+            tried.add(offset)
+            attempts += 1
+            r2 = requests.get(f"{GBIF_API}/occurrence/search",
+                              params={"taxonKey": key, "mediaType": "StillImage",
+                                      "limit": 1, "offset": offset},
+                              headers=HEADERS, timeout=8)
+            if not r2.ok:
+                continue
+            results = r2.json().get("results", [])
+            if not results:
+                continue
+            for m in results[0].get("media", []):
+                u = m.get("identifier", "")
+                if u and u.startswith("http") and u not in seen and u not in picked:
+                    picked.append(u)
+                    break
+        return picked, f"{len(picked)}/{total} (random draws, {attempts} tries)"
     except Exception as e:
         return [], f"error: {e}"
 
@@ -1057,6 +1007,7 @@ def run_generation(config, session, my_gen_id=None):
 
     if embed:
         import tempfile, os as _os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         # Collect all unique URLs across all plants
         all_slots = []
